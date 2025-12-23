@@ -26,6 +26,13 @@ func main() {
 	uploadDir := flag.String("upload_dir", defaultUploadDir, "Directory to store uploaded packages")
 	dbPath := flag.String("db_path", defaultDBPath, "Path to SQLite database file")
 
+	// 新增 MinIO 参数
+	storeType := flag.String("store_type", "local", "Storage type: local or minio")
+	minioEp := flag.String("minio_endpoint", "127.0.0.1:9000", "MinIO Endpoint")
+	minioAk := flag.String("minio_ak", "minioadmin", "MinIO Access Key")
+	minioSk := flag.String("minio_sk", "minioadmin", "MinIO Secret Key")
+	minioBucket := flag.String("minio_bucket", "ops-packages", "MinIO Bucket")
+
 	flag.Parse()
 
 	// 3. 确保目录存在
@@ -35,7 +42,21 @@ func main() {
 
 	// 4. 启动
 	assets := root.GetAssets()
-	if err := api.StartMasterServer(*port, *uploadDir, *dbPath, assets); err != nil {
+	// 传入 config 对象
+	config := api.ServerConfig{
+		Port:      *port,
+		UploadDir: *uploadDir,
+		DBPath:    *dbPath,
+		StoreType: *storeType,
+		MinioConfig: api.MinioConfig{
+			Endpoint: *minioEp,
+			AK:       *minioAk,
+			SK:       *minioSk,
+			Bucket:   *minioBucket,
+		},
+	}
+
+	if err := api.StartMasterServer(config, assets); err != nil {
 		log.Fatal(err)
 	}
 }

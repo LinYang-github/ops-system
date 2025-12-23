@@ -60,7 +60,11 @@ func handleDeployInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	downloadURL := fmt.Sprintf("http://%s/download/%s/%s.zip", r.Host, req.ServiceName, req.ServiceVersion)
+	downloadURL, err := pkgManager.GetDownloadURL(req.ServiceName, req.ServiceVersion, r.Host)
+	if err != nil {
+		http.Error(w, "Generate URL failed: "+err.Error(), 500)
+		return
+	}
 	instanceID := fmt.Sprintf("inst-%d", time.Now().UnixNano())
 
 	// 1. 使用 instManager 注册

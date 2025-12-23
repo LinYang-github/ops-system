@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"ops-system/internal/master/manager"
 	"ops-system/internal/master/monitor"
 	"ops-system/internal/master/ws"
+	"ops-system/pkg/storage"
 )
 
 // 全局 Manager 实例 (供同一包下的 handlers 使用)
@@ -25,22 +27,59 @@ var (
 
 var uploadPath string
 
+// 定义配置结构体
+type MinioConfig struct {
+	Endpoint string
+	AK, SK   string
+	Bucket   string
+}
+
+type ServerConfig struct {
+	Port      string
+	UploadDir string
+	DBPath    string
+	StoreType string // "local" | "minio"
+	MinioConfig
+}
+
 // StartMasterServer 启动 Master HTTP 服务
-func StartMasterServer(port, dir, dbPath string, assets fs.FS) error {
-	uploadPath = dir
+func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
+	uploadPath = cfg.UploadDir // 依然保留，用于 Local 模式或临时文件
 
 	// 1. 初始化数据库 (传入路径)
-	database := db.InitDB(dbPath)
+	database := db.InitDB(cfg.DBPath)
 
 	// 1. 初始化 Monitor Store
 	monitorStore = monitor.NewMemoryTSDB()
+
+	// 2. 初始化 Storage Provider
+	var storeProvider storage.Provider
+	var err error
+
+	if cfg.StoreType == "minio" {
+		log.Printf("Using MinIO Storage: %s/%s", cfg.MinioConfig.Endpoint, cfg.MinioConfig.Bucket)
+		storeProvider, err = storage.NewMinioProvider(
+			cfg.MinioConfig.Endpoint,
+			cfg.MinioConfig.AK,
+			cfg.MinioConfig.SK,
+			cfg.MinioConfig.Bucket,
+			false, // useSSL (可加参数控制)
+		)
+	} else {
+		log.Printf("Using Local Storage: %s", cfg.UploadDir)
+		storeProvider = storage.NewLocalProvider(cfg.UploadDir)
+	}
+
+	if err != nil {
+		return fmt.Errorf("init storage failed: %v", err)
+	}
 
 	// 2. 初始化 Managers (依赖注入)
 	logManager = manager.NewLogManager(database)
 	sysManager = manager.NewSystemManager(database)
 	instManager = manager.NewInstanceManager(database)
 	nodeManager = manager.NewNodeManager(database, monitorStore)
-	pkgManager = manager.NewPackageManager(uploadPath)
+	pkgManager = manager.NewPackageManager(storeProvider)
 	configManager = manager.NewConfigManager(database)
 	backupManager = manager.NewBackupManager(database, uploadPath)
 	nodeManager = manager.NewNodeManager(database, monitorStore)
@@ -51,10 +90,10 @@ func StartMasterServer(port, dir, dbPath string, assets fs.FS) error {
 	mux := http.NewServeMux()
 	registerRoutes(mux, assets)
 
-	log.Printf("Master UI & API running on %s", port)
+	log.Printf("Master UI & API running on %s", cfg.Port)
 
 	server := &http.Server{
-		Addr:         port,
+		Addr:         cfg.Port,
 		Handler:      mux,
 		ReadTimeout:  0, // 支持大文件上传
 		WriteTimeout: 0,
