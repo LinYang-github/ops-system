@@ -1,0 +1,68 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build:master",
+      "type": "shell",
+      "command": "go build -o master ./cmd/master/main.go",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "presentation": {
+        "panel": "new",
+        "reveal": "always",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "build:worker",
+      "type": "shell",
+      "command": "go build -o worker ./cmd/worker/main.go",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "panel": "new",
+        "reveal": "always",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "build:web",
+      "type": "shell",
+      "command": "npm run build",
+      "options": {
+        "cwd": "${workspaceFolder}/web"
+      },
+      "group": "build",
+      "presentation": {
+        "panel": "new",
+        "reveal": "always",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+
+    // 🔥 一键并行构建（推荐使用）
+    {
+      "label": "build:all",
+      "dependsOn": [
+        "build:master",
+        "build:worker",
+        "build:web"
+      ],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}

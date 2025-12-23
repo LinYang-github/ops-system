@@ -1,0 +1,44 @@
+{
+	// =========================
+	// 1️⃣ 项目目录结构
+	// =========================
+	"folders": [
+	  {
+		"path": ".",
+		"name": "backend"
+	  },
+	  {
+		"path": "web",
+		"name": "web"
+	  }
+	],
+  
+	// =========================
+	// 2️⃣ 项目级设置（只影响本项目）
+	// =========================
+	"settings": {
+	  // 终端永远从项目根目录起
+	  "terminal.integrated.cwd": "${workspaceFolder:backend}",
+  
+	  // 终端恢复（配合 tasks 使用）
+	  "terminal.integrated.enablePersistentSessions": true,
+	  "terminal.integrated.persistentSessionReviveProcess": "onExit",
+  
+	  // Go 开发体验
+	  "go.toolsManagement.autoUpdate": true,
+	  "go.useLanguageServer": true,
+  
+	  // 保存即格式化
+	  "editor.formatOnSave": true,
+  
+	  // 前端体验
+	  "eslint.alwaysShowStatus": true,
+  
+	  // 避免无关文件干扰
+	  "files.exclude": {
+		"**/node_modules": true,
+		"**/dist": true
+	  }
+	}
+  }
+  

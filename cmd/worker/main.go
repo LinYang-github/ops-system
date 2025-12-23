@@ -10,6 +10,7 @@ import (
 	"ops-system/internal/worker/agent"
 	"ops-system/internal/worker/executor"
 	"ops-system/internal/worker/handler"
+	"ops-system/internal/worker/utils"
 )
 
 func main() {
@@ -29,12 +30,21 @@ func main() {
 	masterAddr := flag.String("master", "http://127.0.0.1:8080", "Master URL")
 	workDir := flag.String("work_dir", defaultWorkDir, "Directory to store instances")
 
+	// 【新增】自启配置参数: 1=开启, 0=关闭, -1(默认)=忽略
+	autoStart := flag.Int("autostart", -1, "Set auto-start: 1=enable, 0=disable")
+
 	flag.Parse()
 
 	// 4. 再次确保是绝对路径 (防止用户通过命令行传入相对路径如 ./data)
 	absWorkDir, err := filepath.Abs(*workDir)
 	if err != nil {
 		log.Fatalf("Invalid work dir: %v", err)
+	}
+	if *autoStart != -1 {
+		enable := *autoStart == 1
+		if err := utils.HandleAutoStart(enable, *masterAddr, *port, absWorkDir); err != nil {
+			log.Fatalf("配置自启失败: %v", err)
+		}
 	}
 
 	// 5. 初始化各模块
