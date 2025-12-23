@@ -1,0 +1,74 @@
+package db
+
+import (
+	"database/sql"
+	"log"
+
+	_ "modernc.org/sqlite"
+)
+
+// InitDB 初始化并返回数据库连接
+// 【修复点】增加 dbPath 参数，匹配 server.go 的调用
+func InitDB(dbPath string) *sql.DB {
+	log.Printf(">>> DB PATH: %s", dbPath)
+
+	// 使用传入的 dbPath，而不是自己在内部计算
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		log.Fatalf("Failed to open db: %v", err)
+	}
+
+	initTables(db)
+
+	return db
+}
+
+func initTables(db *sql.DB) {
+	sqls := []string{
+		// 系统表
+		`CREATE TABLE IF NOT EXISTS system_infos (id TEXT PRIMARY KEY, name TEXT, description TEXT, create_time INTEGER);`,
+		// 模块表
+		`CREATE TABLE IF NOT EXISTS system_modules (id TEXT PRIMARY KEY, system_id TEXT, module_name TEXT, package_name TEXT, package_version TEXT, description TEXT);`,
+		// 实例表
+		`CREATE TABLE IF NOT EXISTS instance_infos (id TEXT PRIMARY KEY, system_id TEXT, node_ip TEXT, service_name TEXT, service_version TEXT, status TEXT, pid INTEGER, uptime INTEGER);`,
+		// 日志表
+		`CREATE TABLE IF NOT EXISTS sys_op_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, operator TEXT, action TEXT, target_type TEXT, target_name TEXT, detail TEXT, status TEXT, create_time INTEGER);`,
+
+		// 节点表 (包含 port 和 mac_addr)
+		`CREATE TABLE IF NOT EXISTS node_infos (
+			ip TEXT PRIMARY KEY,
+			port INTEGER,
+			hostname TEXT,
+			name TEXT,
+			mac_addr TEXT,
+			os TEXT,
+			arch TEXT,
+			cpu_cores INTEGER,
+			mem_total INTEGER,
+			disk_total INTEGER,
+			status TEXT,
+			last_heartbeat INTEGER,
+			cpu_usage REAL,
+			mem_usage REAL
+		);`,
+
+		// 通用配置表
+		`CREATE TABLE IF NOT EXISTS sys_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT,
+			updated_at INTEGER
+		);`,
+	}
+
+	for _, sqlStmt := range sqls {
+		if _, err := db.Exec(sqlStmt); err != nil {
+			log.Fatalf("Failed to init table: %v\nSQL: %s", err, sqlStmt)
+		}
+	}
+}
+
+// CloseDB 关闭数据库连接 (用于恢复备份前释放锁)
+func CloseDB(db *sql.DB) error {
+	log.Println(">>> Closing Database Connection...")
+	return db.Close()
+}
