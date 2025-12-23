@@ -72,6 +72,11 @@ type ServiceManifest struct {
 	StopArgs       []string          `json:"stop_args"`       // 停止参数 (可选)
 	Env            map[string]string `json:"env"`             // 环境变量
 
+	// 日志文件映射
+	// Key: 日志显示名称 (如 "Access Log", "Error Log")
+	// Value: 日志绝对路径 或 相对工作目录的路径 (如 "/var/log/nginx/access.log", "logs/gc.log")
+	LogPaths map[string]string `json:"log_paths"`
+
 	// --- 新增：纳管专用字段 ---
 	IsExternal      bool   `json:"is_external"`       // 是否为纳管服务
 	ExternalWorkDir string `json:"external_work_dir"` // 外部服务的真实工作目录
@@ -222,4 +227,10 @@ type BackupFile struct {
 	Size       int64  `json:"size"`        // 大小 (Bytes)
 	CreateTime int64  `json:"create_time"` // 创建时间
 	WithFiles  bool   `json:"with_files"`  // 是否包含 uploads 文件
+}
+
+// 新增：日志文件列表响应
+type LogFilesResp struct {
+	InstanceID string   `json:"instance_id"`
+	Files      []string `json:"files"` // e.g. ["Console Log", "Access Log"]
 }

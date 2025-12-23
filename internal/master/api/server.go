@@ -97,6 +97,8 @@ func registerRoutes(mux *http.ServeMux, assets fs.FS) {
 
 	// --- Log 相关 (log_handler.go) ---
 	mux.HandleFunc("/api/logs", handleGetOpLogs)
+	mux.HandleFunc("/api/instance/logs/files", handleGetInstanceLogFiles)
+	mux.HandleFunc("/api/instance/logs/stream", handleInstanceLogStream)
 
 	mux.HandleFunc("/api/nacos/settings", handleNacosSettings)
 	mux.HandleFunc("/api/nacos/namespaces", handleNacosNamespaces)

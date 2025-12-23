@@ -179,7 +179,7 @@
                     link type="warning" size="small"
                     @click="handleAction(scope.row.id, 'stop')"
                   >停止</el-button>
-                  
+                  <el-button link type="primary" size="small" icon="Document" @click="openLog(scope.row)">日志</el-button>
                   <el-dropdown trigger="click" size="small" @command="(cmd) => handleInstanceCommand(cmd, scope.row.id)">
                     <span class="el-dropdown-link action-more">
                       <el-icon><More /></el-icon>
@@ -264,7 +264,11 @@
         <el-button type="primary" size="small" @click="registerExternal" :loading="adoptDialog.loading">确定纳管</el-button>
       </template>
     </el-dialog>
-
+    <LogViewer 
+      v-model="logDialog.visible" 
+      :instance-id="logDialog.instId" 
+      :instance-name="logDialog.instName" 
+    />
   </div>
 </template>
 
@@ -272,8 +276,9 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, Refresh, ArrowDown, Setting, MoreFilled, More, Link, InfoFilled, VideoPlay, VideoPause, Loading } from '@element-plus/icons-vue'
+import { Plus, Delete, Refresh, ArrowDown, Setting, MoreFilled, More, Link, InfoFilled, VideoPlay, VideoPause, Loading, Document } from '@element-plus/icons-vue'
 import { wsStore } from '../store/wsStore'
+import LogViewer from './LogViewer.vue'
 
 const props = defineProps(['targetSystemId'])
 const emit = defineEmits(['refresh-systems'])
@@ -354,7 +359,13 @@ watch(() => props.targetSystemId, (newId) => {
 })
 
 // --- 接口调用实现 ---
-
+const logDialog = reactive({ visible: false, instId: '', instName: '' })
+    
+    const openLog = (row) => {
+      logDialog.instId = row.id
+      logDialog.instName = row.service_name
+      logDialog.visible = true
+    }
 const refreshData = async () => {
   if (!props.targetSystemId) return
   try {

@@ -29,6 +29,8 @@ func StartWorkerServer(port string) {
 	http.HandleFunc("/api/instance/action", handleInstanceAction) // 处理实例启停
 	http.HandleFunc("/api/external/register", handleRegisterExternal)
 
+	http.HandleFunc("/api/log/ws", handleLogStream)
+	http.HandleFunc("/api/log/files", handleGetLogFiles)
 	log.Printf("Worker HTTP Server started on %s", port)
 	http.ListenAndServe(port, nil)
 }
@@ -188,4 +190,26 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+func handleGetLogFiles(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("instance_id")
+	if id == "" {
+		http.Error(w, "missing instance_id", 400)
+		return
+	}
+
+	files, err := executor.GetLogFiles(id)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	resp := protocol.LogFilesResp{
+		InstanceID: id,
+		Files:      files,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
