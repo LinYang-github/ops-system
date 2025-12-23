@@ -208,3 +208,15 @@ func (nm *NodeManager) GetNode(ip string) (*protocol.NodeInfo, bool) {
 	}
 	return &n, true
 }
+
+// GetAllNodesMetrics 获取所有节点的监控快照 (供 AlertManager 使用)
+func (nm *NodeManager) GetAllNodesMetrics() map[string]protocol.NodeInfo {
+	// 复用 GetAllNodes 的逻辑，或者简化只读内存
+	// 这里为了简单，直接调用 GetAllNodes
+	nodes := nm.GetAllNodes()
+	res := make(map[string]protocol.NodeInfo)
+	for _, n := range nodes {
+		res[n.IP] = n
+	}
+	return res
+}

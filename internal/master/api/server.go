@@ -23,6 +23,7 @@ var (
 	configManager *manager.ConfigManager
 	backupManager *manager.BackupManager
 	monitorStore  *monitor.MemoryTSDB
+	alertManager  *manager.AlertManager
 )
 
 var uploadPath string
@@ -83,6 +84,8 @@ func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
 	configManager = manager.NewConfigManager(database)
 	backupManager = manager.NewBackupManager(database, uploadPath)
 	nodeManager = manager.NewNodeManager(database, monitorStore)
+	alertManager = manager.NewAlertManager(database, nodeManager, instManager)
+
 	// 3. 启动 WebSocket Hub
 	go ws.GlobalHub.Run()
 
@@ -152,6 +155,13 @@ func registerRoutes(mux *http.ServeMux, assets fs.FS) {
 	mux.HandleFunc("/api/backups/restore", handleRestoreBackup) // POST
 
 	mux.HandleFunc("/api/monitor/query_range", handleQueryRange)
+
+	mux.HandleFunc("/api/alerts/rules", handleListRules)
+	mux.HandleFunc("/api/alerts/rules/add", handleAddRule)
+	mux.HandleFunc("/api/alerts/rules/delete", handleDeleteRule)
+	mux.HandleFunc("/api/alerts/events", handleGetAlerts)
+	mux.HandleFunc("/api/alerts/events/delete", handleDeleteEvent)
+	mux.HandleFunc("/api/alerts/events/clear", handleClearEvents)
 	// --- WebSocket ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 

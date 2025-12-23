@@ -167,3 +167,7 @@ func HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 }
+
+func BroadcastAlerts(data interface{}) {
+	GlobalHub.broadcast <- WsMessage{Type: "alert", Data: data}
+}
