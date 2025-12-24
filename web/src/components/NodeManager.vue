@@ -1,7 +1,7 @@
 <template>
   <div class="view-container">
     
-    <!-- Header -->
+    <!-- 1. Header -->
     <div class="header">
       <div class="header-left">
         <h2>基础设施节点监控</h2>
@@ -14,118 +14,137 @@
           prefix-icon="Search" 
           style="width: 240px; margin-right: 12px;" 
           clearable 
+          @input="handleSearch"
         />
         <el-button type="primary" icon="Plus" @click="addDialogVisible = true">添加节点</el-button>
         <el-button icon="Refresh" circle @click="fetchNodes" :loading="loading" title="强制刷新" />
       </div>
     </div>
 
-    <!-- 节点表格 -->
+    <!-- 2. 节点表格容器 -->
     <el-card shadow="never" class="table-card">
-      <el-table 
-        :data="filteredNodes" 
-        style="width: 100%; height: 100%" 
-        stripe 
-        highlight-current-row
-      >
-        <!-- 1. 节点标识 -->
-        <el-table-column label="节点名称 / IP" min-width="220">
-          <template #default="scope">
-            <div class="node-identity">
-              <div class="icon-wrapper" :class="scope.row.status">
-                <el-icon><Monitor /></el-icon>
-              </div>
-              <div class="node-text">
-                <div class="node-name-row">
-                  <span class="node-name">{{ scope.row.name }}</span>
-                  <el-icon class="edit-icon" @click.stop="openRename(scope.row)"><Edit /></el-icon>
+      <div class="table-wrapper">
+        <!-- 注意：:data 绑定的是 pagedNodes (分页后的数据) -->
+        <el-table 
+          :data="pagedNodes" 
+          style="width: 100%; height: 100%" 
+          stripe 
+          highlight-current-row
+          size="small"
+        >
+          <!-- 1. 节点标识 -->
+          <el-table-column label="节点名称 / IP" min-width="220">
+            <template #default="scope">
+              <div class="node-identity">
+                <div class="icon-wrapper" :class="scope.row.status">
+                  <el-icon><Monitor /></el-icon>
                 </div>
-                <div class="node-ip">
-                  {{ scope.row.ip }}
-                  <span v-if="scope.row.port > 0" class="node-port">:{{ scope.row.port }}</span>
+                <div class="node-text">
+                  <div class="node-name-row">
+                    <span class="node-name">{{ scope.row.name }}</span>
+                    <el-icon class="edit-icon" @click.stop="openRename(scope.row)"><Edit /></el-icon>
+                  </div>
+                  <div class="node-ip">
+                    {{ scope.row.ip }}
+                    <span v-if="scope.row.port > 0" class="node-port">:{{ scope.row.port }}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-          </template>
-        </el-table-column>
+            </template>
+          </el-table-column>
 
-        <!-- 2. 硬件信息 -->
-        <el-table-column label="硬件信息" min-width="180" show-overflow-tooltip>
-          <template #default="scope">
-            <div class="hw-info">
-              <div><span class="label">Host:</span> {{ scope.row.hostname }}</div>
-              <div><span class="label">OS:</span> {{ formatOS(scope.row.os) }} ({{ scope.row.arch }})</div>
-              <div v-if="scope.row.mac_addr"><span class="label">MAC:</span> {{ scope.row.mac_addr }}</div>
-            </div>
-          </template>
-        </el-table-column>
-
-        <!-- 3. 状态 -->
-        <el-table-column label="状态" width="100" align="center">
-          <template #default="scope">
-            <el-tag :type="getStatusType(scope.row.status)" effect="dark" size="small" class="status-tag">
-              {{ scope.row.status }}
-            </el-tag>
-          </template>
-        </el-table-column>
-
-        <!-- 4. 资源监控 (实时跳动) -->
-        <el-table-column label="资源使用率" width="200">
-          <template #default="scope">
-            <div v-if="scope.row.status === 'online'" class="resource-bar">
-              <div class="bar-row">
-                <span class="label">CPU</span>
-                <el-progress 
-                  :percentage="Number(scope.row.cpu_usage?.toFixed(1) || 0)" 
-                  :stroke-width="6" :show-text="false" class="progress" :color="customColors"
-                />
-                <span class="val">{{ scope.row.cpu_usage?.toFixed(0) }}%</span>
+          <!-- 2. 硬件信息 -->
+          <el-table-column label="硬件信息" min-width="180" show-overflow-tooltip>
+            <template #default="scope">
+              <div class="hw-info">
+                <div><span class="label">Host:</span> {{ scope.row.hostname }}</div>
+                <div><span class="label">OS:</span> {{ formatOS(scope.row.os) }} ({{ scope.row.arch }})</div>
+                <div v-if="scope.row.mac_addr"><span class="label">MAC:</span> {{ scope.row.mac_addr }}</div>
               </div>
-              <div class="bar-row">
-                <span class="label">MEM</span>
-                <el-progress 
-                  :percentage="Number(scope.row.mem_usage?.toFixed(1) || 0)" 
-                  :stroke-width="6" :show-text="false" class="progress" :color="customColors"
-                />
-                <span class="val">{{ scope.row.mem_usage?.toFixed(0) }}%</span>
-              </div>
-              <div class="disk-info">
-                Disk: {{ (scope.row.disk_total / 1024 / 1024 / 1024).toFixed(0) }} GB
-              </div>
-            </div>
-            <span v-else class="text-gray">-</span>
-          </template>
-        </el-table-column>
+            </template>
+          </el-table-column>
 
-        <!-- 5. 最后心跳 -->
-        <el-table-column label="最后心跳" width="140" align="right">
-          <template #default="scope">
-            <span class="time-text">{{ formatTime(scope.row.last_heartbeat) }}</span>
-          </template>
-        </el-table-column>
+          <!-- 3. 状态 -->
+          <el-table-column label="状态" width="100" align="center">
+            <template #default="scope">
+              <el-tag :type="getStatusType(scope.row.status)" effect="dark" size="small" class="status-tag">
+                {{ scope.row.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
 
-        <!-- 6. 操作 -->
-        <el-table-column label="操作" width="120" fixed="right" align="center">
-          <template #default="scope">
-            <el-button link type="primary" @click="openDetail(scope.row)">详情</el-button>
-            <el-dropdown trigger="click" @command="(cmd) => handleCommand(cmd, scope.row)">
-              <el-button link type="primary">
-                管理 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-              </el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="terminal" icon="Terminal">Web 终端</el-dropdown-item>
-                  <el-dropdown-item command="reset" icon="RefreshLeft">重置名称</el-dropdown-item>
-                  <el-dropdown-item command="delete" icon="Delete" style="color: var(--el-color-danger)" divided>删除节点</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-          </template>
-        </el-table-column>
-      </el-table>
+          <!-- 4. 资源监控 (实时跳动) -->
+          <el-table-column label="资源使用率" width="200">
+            <template #default="scope">
+              <div v-if="scope.row.status === 'online'" class="resource-bar">
+                <div class="bar-row">
+                  <span class="label">CPU</span>
+                  <el-progress 
+                    :percentage="Number(scope.row.cpu_usage?.toFixed(1) || 0)" 
+                    :stroke-width="6" :show-text="false" class="progress" :color="customColors"
+                  />
+                  <span class="val">{{ scope.row.cpu_usage?.toFixed(0) }}%</span>
+                </div>
+                <div class="bar-row">
+                  <span class="label">MEM</span>
+                  <el-progress 
+                    :percentage="Number(scope.row.mem_usage?.toFixed(1) || 0)" 
+                    :stroke-width="6" :show-text="false" class="progress" :color="customColors"
+                  />
+                  <span class="val">{{ scope.row.mem_usage?.toFixed(0) }}%</span>
+                </div>
+                <div class="disk-info">
+                  Disk: {{ (scope.row.disk_total / 1024 / 1024 / 1024).toFixed(0) }} GB
+                </div>
+              </div>
+              <span v-else class="text-gray">-</span>
+            </template>
+          </el-table-column>
+
+          <!-- 5. 最后心跳 -->
+          <el-table-column label="最后心跳" width="140" align="right">
+            <template #default="scope">
+              <span class="time-text">{{ formatTime(scope.row.last_heartbeat) }}</span>
+            </template>
+          </el-table-column>
+
+          <!-- 6. 操作 -->
+          <el-table-column label="操作" width="120" fixed="right" align="center">
+            <template #default="scope">
+              <el-dropdown trigger="click" @command="(cmd) => handleCommand(cmd, scope.row)">
+                <el-button link type="primary">
+                  管理 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="detail" icon="View">查看详情</el-dropdown-item>
+                    <el-dropdown-item command="terminal" icon="Terminal">Web 终端</el-dropdown-item>
+                    <el-dropdown-item command="reset" icon="RefreshLeft">重置名称</el-dropdown-item>
+                    <el-dropdown-item command="delete" icon="Delete" style="color: var(--el-color-danger)" divided>删除节点</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <!-- 3. 分页控件 -->
+      <div class="pagination-bar">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :page-sizes="[20, 50, 100, 200]"
+          :background="true"
+          layout="total, sizes, prev, pager, next, jumper"
+          :total="filteredNodes.length"
+          @size-change="handleSizeChange"
+          @current-change="handleCurrentChange"
+        />
+      </div>
     </el-card>
 
-    <!-- 弹窗1：Web 终端 (找回功能) -->
+    <!-- 弹窗1：Web 终端 -->
     <el-dialog v-model="cmdDialog.visible" :title="`远程终端 - ${cmdDialog.targetIP}`" width="700px">
       <div class="cmd-container">
         <el-input 
@@ -180,7 +199,10 @@
         <el-button type="primary" @click="confirmRename">保存</el-button>
       </template>
     </el-dialog>
+    
+    <!-- 详情抽屉组件 (需确保有 NodeDetailDrawer.vue) -->
     <NodeDetailDrawer v-model="detailVisible" :nodeInfo="currentNode" />
+
   </div>
 </template>
 
@@ -189,8 +211,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { wsStore } from '../store/wsStore'
-import { Search, Plus, Refresh, Monitor, Edit, ArrowDown, Terminal, RefreshLeft, Delete, InfoFilled } from '@element-plus/icons-vue'
-
+import { Search, Plus, Refresh, Monitor, Edit, ArrowDown, Terminal, RefreshLeft, Delete, InfoFilled, View } from '@element-plus/icons-vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
 // --- 状态定义 ---
@@ -199,23 +220,16 @@ const keyword = ref('')
 const addDialogVisible = ref(false)
 const newNode = reactive({ ip: '', name: '' })
 const renameDialog = reactive({ visible: false, ip: '', name: '' })
-
 const detailVisible = ref(false)
 const currentNode = ref(null)
-    
-const openDetail = (row) => {
-  currentNode.value = row
-  detailVisible.value = true
-}
+
+// 分页状态
+const currentPage = ref(1)
+const pageSize = ref(20)
 
 // 终端状态
 const cmdDialog = reactive({
-  visible: false,
-  targetIP: '',
-  command: '',
-  result: '',
-  error: '',
-  loading: false
+  visible: false, targetIP: '', command: '', result: '', error: '', loading: false
 })
 
 const customColors = [
@@ -225,7 +239,6 @@ const customColors = [
 ]
 
 // --- 数据源 (实时) ---
-// 使用计算属性绑定 WS Store，确保数据实时更新
 const nodes = computed(() => wsStore.nodes)
 
 const filteredNodes = computed(() => {
@@ -238,7 +251,28 @@ const filteredNodes = computed(() => {
   )
 })
 
-// --- API ---
+// 【核心优化】计算当前页显示的数据
+const pagedNodes = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  const end = start + pageSize.value
+  return filteredNodes.value.slice(start, end)
+})
+
+// --- 方法 ---
+
+// 搜索时重置到第一页
+const handleSearch = () => {
+  currentPage.value = 1
+}
+
+const handleSizeChange = (val) => {
+  pageSize.value = val
+  currentPage.value = 1
+}
+
+const handleCurrentChange = (val) => {
+  currentPage.value = val
+}
 
 const fetchNodes = async () => {
   loading.value = true
@@ -272,14 +306,15 @@ const handleCommand = (cmd, row) => {
     })
   } else if (cmd === 'terminal') {
     openCmdDialog(row)
+  } else if (cmd === 'detail') {
+    currentNode.value = row
+    detailVisible.value = true
   }
 }
 
-// 终端逻辑 (找回)
+// 终端逻辑
 const openCmdDialog = (row) => {
-  if (row.status !== 'online') {
-    return ElMessage.warning('节点不在线，无法连接终端')
-  }
+  if (row.status !== 'online') return ElMessage.warning('节点不在线')
   cmdDialog.targetIP = row.ip
   cmdDialog.command = ''
   cmdDialog.result = ''
@@ -307,11 +342,9 @@ const execCmd = async () => {
   }
 }
 
-// Rename
 const openRename = (row) => { renameDialog.ip = row.ip; renameDialog.name = row.name; renameDialog.visible = true }
 const confirmRename = async () => { await axios.post('/api/nodes/rename', { ip: renameDialog.ip, name: renameDialog.name }); renameDialog.visible = false; fetchNodes() }
 
-// Helpers
 const getStatusType = (s) => s==='online'?'success':(s==='planned'?'info':'danger')
 const formatTime = (ts) => { if(!ts)return'-'; const d=Math.floor(Date.now()/1000-ts); if(d<60)return'刚刚'; if(d<3600)return`${Math.floor(d/60)}分前`; return new Date(ts*1000).toLocaleDateString() }
 const formatOS = (s) => s && s.length>20 ? s.substring(0,20)+'...' : s
@@ -329,9 +362,12 @@ onMounted(() => {
 .count-tag { font-family: monospace; }
 .header-right { display: flex; align-items: center; }
 
+/* Table Container with Pagination */
 .table-card { border: none; flex: 1; display: flex; flex-direction: column; overflow: hidden; background: transparent; }
+.table-wrapper { flex: 1; overflow: hidden; }
+.pagination-bar { padding: 10px 15px; border-top: 1px solid var(--el-border-color-lighter); background: var(--el-bg-color); display: flex; justify-content: flex-end; }
 
-/* 节点列样式 */
+/* Node Identity Column */
 .node-identity { display: flex; align-items: center; gap: 12px; }
 .icon-wrapper { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; background: var(--el-fill-color-light); color: var(--el-text-color-secondary); }
 .icon-wrapper.online { background: var(--el-color-success-light-9); color: var(--el-color-success); }

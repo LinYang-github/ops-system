@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+func InitHTTPClient(timeout time.Duration) {
+	GlobalClient.Timeout = timeout
+}
+
 // GlobalClient 全局单例 HTTP Client，配置长连接池
 var GlobalClient = &http.Client{
 	Timeout: 10 * time.Second, // 设置一个合理的超时

@@ -10,6 +10,7 @@ import (
 	"ops-system/internal/master/manager"
 	"ops-system/internal/master/monitor"
 	"ops-system/internal/master/ws"
+	"ops-system/pkg/config"
 	"ops-system/pkg/storage"
 )
 
@@ -29,9 +30,9 @@ type ServerConfig struct {
 }
 
 // StartMasterServer 启动 Master HTTP 服务
-func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
+func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	// 1. 初始化数据库
-	database := db.InitDB(cfg.DBPath)
+	database := db.InitDB(cfg.Server.DBPath)
 
 	// 2. 初始化监控存储 (内存 TSDB)
 	monitorStore := monitor.NewMemoryTSDB()
@@ -40,18 +41,18 @@ func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
 	var storeProvider storage.Provider
 	var err error
 
-	if cfg.StoreType == "minio" {
-		log.Printf("Using MinIO Storage: %s/%s", cfg.MinioConfig.Endpoint, cfg.MinioConfig.Bucket)
+	if cfg.Storage.Type == "minio" {
+		log.Printf("Using MinIO Storage: %s/%s", cfg.Storage.Minio.Endpoint, cfg.Storage.Minio.Bucket)
 		storeProvider, err = storage.NewMinioProvider(
-			cfg.MinioConfig.Endpoint,
-			cfg.MinioConfig.AK,
-			cfg.MinioConfig.SK,
-			cfg.MinioConfig.Bucket,
+			cfg.Storage.Minio.Endpoint,
+			cfg.Storage.Minio.AK,
+			cfg.Storage.Minio.SK,
+			cfg.Storage.Minio.Bucket,
 			false, // useSSL
 		)
 	} else {
-		log.Printf("Using Local Storage: %s", cfg.UploadDir)
-		storeProvider = storage.NewLocalProvider(cfg.UploadDir)
+		log.Printf("Using Local Storage: %s", cfg.Storage.UploadDir)
+		storeProvider = storage.NewLocalProvider(cfg.Storage.UploadDir)
 	}
 
 	if err != nil {
@@ -63,10 +64,10 @@ func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
 	logMgr := manager.NewLogManager(database)
 	sysMgr := manager.NewSystemManager(database)
 	instMgr := manager.NewInstanceManager(database)
-	nodeMgr := manager.NewNodeManager(database, monitorStore)
+	nodeMgr := manager.NewNodeManager(database, monitorStore, cfg.Logic.NodeOfflineThreshold)
 	pkgMgr := manager.NewPackageManager(storeProvider)
 	configMgr := manager.NewConfigManager(database)
-	backupMgr := manager.NewBackupManager(database, cfg.UploadDir)
+	backupMgr := manager.NewBackupManager(database, cfg.Storage.UploadDir)
 
 	// AlertManager 依赖 DB, NodeManager, InstanceManager
 	alertMgr := manager.NewAlertManager(database, nodeMgr, instMgr)
@@ -90,12 +91,12 @@ func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
 
 	// 7. 创建路由器并注册路由
 	mux := http.NewServeMux()
-	registerRoutes(mux, serverHandler, cfg.UploadDir, assets)
+	registerRoutes(mux, serverHandler, cfg.Storage.UploadDir, assets)
 
-	log.Printf("Master UI & API running on %s", cfg.Port)
+	log.Printf("Master UI & API running on %s", cfg.Server.Port)
 
 	server := &http.Server{
-		Addr:         cfg.Port,
+		Addr:         cfg.Server.Port,
 		Handler:      mux,
 		ReadTimeout:  0, // 支持大文件上传
 		WriteTimeout: 0,
