@@ -10,38 +10,38 @@ import (
 
 // 全局变量 alertManager (在 server.go 定义)
 
-func handleListRules(w http.ResponseWriter, r *http.Request) {
-	rules, _ := alertManager.GetRules()
+func (h *ServerHandler) ListRules(w http.ResponseWriter, r *http.Request) {
+	rules, _ := h.alertMgr.GetRules()
 	json.NewEncoder(w).Encode(rules)
 }
 
-func handleAddRule(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) AddRule(w http.ResponseWriter, r *http.Request) {
 	var rule protocol.AlertRule
 	json.NewDecoder(r.Body).Decode(&rule)
-	alertManager.AddRule(rule)
+	h.alertMgr.AddRule(rule)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-func handleDeleteRule(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
 	id, _ := strconv.ParseInt(idStr, 10, 64)
-	alertManager.DeleteRule(id)
+	h.alertMgr.DeleteRule(id)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-func handleGetAlerts(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) GetAlerts(w http.ResponseWriter, r *http.Request) {
 	type Resp struct {
 		Active  []*protocol.AlertEvent `json:"active"`
 		History []*protocol.AlertEvent `json:"history"`
 	}
-	active, _ := alertManager.GetActiveEvents()
-	history, _ := alertManager.GetHistoryEvents(50)
+	active, _ := h.alertMgr.GetActiveEvents()
+	history, _ := h.alertMgr.GetHistoryEvents(50)
 
 	json.NewEncoder(w).Encode(Resp{Active: active, History: history})
 }
 
 // handleDeleteEvent 删除单个事件
-func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) DeleteEvent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -54,7 +54,7 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := alertManager.DeleteEvent(req.ID); err != nil {
+	if err := h.alertMgr.DeleteEvent(req.ID); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -62,7 +62,7 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleClearEvents 清空所有事件
-func handleClearEvents(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) ClearEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -70,7 +70,7 @@ func handleClearEvents(w http.ResponseWriter, r *http.Request) {
 
 	// 这里可以加一个简单的鉴权或参数校验，防止误调
 	// 暂时直接执行
-	if err := alertManager.ClearEvents(); err != nil {
+	if err := h.alertMgr.ClearEvents(); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}

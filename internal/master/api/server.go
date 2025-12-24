@@ -13,21 +13,6 @@ import (
 	"ops-system/pkg/storage"
 )
 
-// 全局 Manager 实例 (供同一包下的 handlers 使用)
-var (
-	sysManager    *manager.SystemManager
-	instManager   *manager.InstanceManager
-	logManager    *manager.LogManager
-	pkgManager    *manager.PackageManager
-	nodeManager   *manager.NodeManager
-	configManager *manager.ConfigManager
-	backupManager *manager.BackupManager
-	monitorStore  *monitor.MemoryTSDB
-	alertManager  *manager.AlertManager
-)
-
-var uploadPath string
-
 // 定义配置结构体
 type MinioConfig struct {
 	Endpoint string
@@ -45,15 +30,13 @@ type ServerConfig struct {
 
 // StartMasterServer 启动 Master HTTP 服务
 func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
-	uploadPath = cfg.UploadDir // 依然保留，用于 Local 模式或临时文件
-
-	// 1. 初始化数据库 (传入路径)
+	// 1. 初始化数据库
 	database := db.InitDB(cfg.DBPath)
 
-	// 1. 初始化 Monitor Store
-	monitorStore = monitor.NewMemoryTSDB()
+	// 2. 初始化监控存储 (内存 TSDB)
+	monitorStore := monitor.NewMemoryTSDB()
 
-	// 2. 初始化 Storage Provider
+	// 3. 初始化文件存储 Provider (Local 或 MinIO)
 	var storeProvider storage.Provider
 	var err error
 
@@ -64,7 +47,7 @@ func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
 			cfg.MinioConfig.AK,
 			cfg.MinioConfig.SK,
 			cfg.MinioConfig.Bucket,
-			false, // useSSL (可加参数控制)
+			false, // useSSL
 		)
 	} else {
 		log.Printf("Using Local Storage: %s", cfg.UploadDir)
@@ -75,23 +58,39 @@ func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
 		return fmt.Errorf("init storage failed: %v", err)
 	}
 
-	// 2. 初始化 Managers (依赖注入)
-	logManager = manager.NewLogManager(database)
-	sysManager = manager.NewSystemManager(database)
-	instManager = manager.NewInstanceManager(database)
-	nodeManager = manager.NewNodeManager(database, monitorStore)
-	pkgManager = manager.NewPackageManager(storeProvider)
-	configManager = manager.NewConfigManager(database)
-	backupManager = manager.NewBackupManager(database, uploadPath)
-	nodeManager = manager.NewNodeManager(database, monitorStore)
-	alertManager = manager.NewAlertManager(database, nodeManager, instManager)
+	// 4. 初始化所有 Manager (依赖注入)
+	// 注意顺序：底层依赖先初始化
+	logMgr := manager.NewLogManager(database)
+	sysMgr := manager.NewSystemManager(database)
+	instMgr := manager.NewInstanceManager(database)
+	nodeMgr := manager.NewNodeManager(database, monitorStore)
+	pkgMgr := manager.NewPackageManager(storeProvider)
+	configMgr := manager.NewConfigManager(database)
+	backupMgr := manager.NewBackupManager(database, cfg.UploadDir)
 
-	// 3. 启动 WebSocket Hub
+	// AlertManager 依赖 DB, NodeManager, InstanceManager
+	alertMgr := manager.NewAlertManager(database, nodeMgr, instMgr)
+
+	// 5. 初始化全局 Handler 容器
+	// 将所有 Manager 注入到 Handler 中，彻底消除全局变量
+	serverHandler := NewServerHandler(
+		sysMgr,
+		instMgr,
+		nodeMgr,
+		logMgr,
+		pkgMgr,
+		configMgr,
+		alertMgr,
+		backupMgr,
+		monitorStore,
+	)
+
+	// 6. 启动 WebSocket Hub
 	go ws.GlobalHub.Run()
 
-	// 4. 创建路由器
+	// 7. 创建路由器并注册路由
 	mux := http.NewServeMux()
-	registerRoutes(mux, assets)
+	registerRoutes(mux, serverHandler, cfg.UploadDir, assets)
 
 	log.Printf("Master UI & API running on %s", cfg.Port)
 
@@ -105,75 +104,76 @@ func StartMasterServer(cfg ServerConfig, assets fs.FS) error {
 	return server.ListenAndServe()
 }
 
-// 注册所有路由
-func registerRoutes(mux *http.ServeMux, assets fs.FS) {
+// registerRoutes 注册所有路由
+// h: 包含所有业务逻辑的 Handler 实例
+func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, assets fs.FS) {
 	// --- Node 相关 (node_handler.go) ---
-	mux.HandleFunc("/api/worker/heartbeat", handleHeartbeat)
-	mux.HandleFunc("/api/nodes", handleListNodes)
-	mux.HandleFunc("/api/nodes/add", handleAddNode)
-	mux.HandleFunc("/api/nodes/delete", handleDeleteNode)
-	mux.HandleFunc("/api/nodes/rename", handleRenameNode)
-	mux.HandleFunc("/api/nodes/reset_name", handleResetNodeName)
-	mux.HandleFunc("/api/ctrl/cmd", handleTriggerCmd)
+	mux.HandleFunc("/api/worker/heartbeat", h.HandleHeartbeat)
+	mux.HandleFunc("/api/nodes", h.ListNodes)
+	mux.HandleFunc("/api/nodes/add", h.AddNode)
+	mux.HandleFunc("/api/nodes/delete", h.DeleteNode)
+	mux.HandleFunc("/api/nodes/rename", h.RenameNode)
+	mux.HandleFunc("/api/nodes/reset_name", h.ResetNodeName)
+	mux.HandleFunc("/api/ctrl/cmd", h.TriggerCmd)
 
 	// --- System 配置相关 (system_handler.go) ---
-	mux.HandleFunc("/api/systems", handleGetSystems)
-	mux.HandleFunc("/api/systems/create", handleCreateSystem)
-	mux.HandleFunc("/api/systems/delete", handleDeleteSystem)
-	mux.HandleFunc("/api/systems/module/add", handleCreateSystemModule)
-	mux.HandleFunc("/api/systems/module/delete", handleDeleteSystemModule)
+	mux.HandleFunc("/api/systems", h.GetSystems)
+	mux.HandleFunc("/api/systems/create", h.CreateSystem)
+	mux.HandleFunc("/api/systems/delete", h.DeleteSystem)
+	mux.HandleFunc("/api/systems/module/add", h.CreateSystemModule)
+	mux.HandleFunc("/api/systems/module/delete", h.DeleteSystemModule)
 
 	// --- Instance 运行相关 (instance_handler.go) ---
-	// 注意：这些函数从 system_handler.go 移到了 instance_handler.go
-	mux.HandleFunc("/api/deploy", handleDeployInstance)
-	mux.HandleFunc("/api/deploy/external", handleRegisterExternal)
-	mux.HandleFunc("/api/instance/action", handleInstanceAction)
-	mux.HandleFunc("/api/instance/status_report", handleWorkerInstanceStatusReport)
-	mux.HandleFunc("/api/systems/action", handleSystemAction) // 批量操作
+	mux.HandleFunc("/api/deploy", h.DeployInstance)
+	mux.HandleFunc("/api/deploy/external", h.RegisterExternal) // 纳管
+	mux.HandleFunc("/api/instance/action", h.InstanceAction)
+	mux.HandleFunc("/api/instance/status_report", h.WorkerInstanceStatusReport)
+	mux.HandleFunc("/api/systems/action", h.SystemAction) // 批量操作
 
 	// --- Package 相关 (package_handler.go) ---
-	mux.HandleFunc("/api/upload", handleUploadPackage)
-	mux.HandleFunc("/api/packages", handleListPackages)
-	mux.HandleFunc("/api/packages/delete", handleDeletePackage)
-	mux.HandleFunc("/api/packages/manifest", handleGetPackageManifest)
+	mux.HandleFunc("/api/upload", h.UploadPackage)
+	mux.HandleFunc("/api/packages", h.ListPackages)
+	mux.HandleFunc("/api/packages/delete", h.DeletePackage)
+	mux.HandleFunc("/api/packages/manifest", h.GetPackageManifest)
 
 	// --- Log 相关 (log_handler.go) ---
-	mux.HandleFunc("/api/logs", handleGetOpLogs)
-	mux.HandleFunc("/api/instance/logs/files", handleGetInstanceLogFiles)
-	mux.HandleFunc("/api/instance/logs/stream", handleInstanceLogStream)
+	mux.HandleFunc("/api/logs", h.GetOpLogs)
+	mux.HandleFunc("/api/instance/logs/files", h.GetInstanceLogFiles)
+	mux.HandleFunc("/api/instance/logs/stream", h.InstanceLogStream)
 
-	mux.HandleFunc("/api/nacos/settings", handleNacosSettings)
-	mux.HandleFunc("/api/nacos/namespaces", handleNacosNamespaces)
-	mux.HandleFunc("/api/nacos/configs", handleNacosConfigs)
-	mux.HandleFunc("/api/nacos/config/detail", handleNacosConfigDetail)
-	mux.HandleFunc("/api/nacos/config/publish", handleNacosPublish)
-	mux.HandleFunc("/api/nacos/config/delete", handleNacosDelete)
+	// --- Config Center (Nacos) 相关 (config_handler.go) ---
+	mux.HandleFunc("/api/nacos/settings", h.NacosSettings)
+	mux.HandleFunc("/api/nacos/namespaces", h.NacosNamespaces)
+	mux.HandleFunc("/api/nacos/configs", h.NacosConfigs)
+	mux.HandleFunc("/api/nacos/config/detail", h.NacosConfigDetail)
+	mux.HandleFunc("/api/nacos/config/publish", h.NacosPublish)
+	mux.HandleFunc("/api/nacos/config/delete", h.NacosDelete)
 
-	mux.HandleFunc("/api/backups", handleListBackups)           // GET
-	mux.HandleFunc("/api/backups/create", handleCreateBackup)   // POST
-	mux.HandleFunc("/api/backups/delete", handleDeleteBackup)   // POST
-	mux.HandleFunc("/api/backups/restore", handleRestoreBackup) // POST
+	// --- Backup 相关 (backup_handler.go) ---
+	mux.HandleFunc("/api/backups", h.ListBackups)
+	mux.HandleFunc("/api/backups/create", h.CreateBackup)
+	mux.HandleFunc("/api/backups/delete", h.DeleteBackup)
+	mux.HandleFunc("/api/backups/restore", h.RestoreBackup)
 
-	mux.HandleFunc("/api/monitor/query_range", handleQueryRange)
+	// --- Monitor 相关 (monitor_handler.go) ---
+	mux.HandleFunc("/api/monitor/query_range", h.QueryRange)
 
-	mux.HandleFunc("/api/alerts/rules", handleListRules)
-	mux.HandleFunc("/api/alerts/rules/add", handleAddRule)
-	mux.HandleFunc("/api/alerts/rules/delete", handleDeleteRule)
-	mux.HandleFunc("/api/alerts/events", handleGetAlerts)
-	mux.HandleFunc("/api/alerts/events/delete", handleDeleteEvent)
-	mux.HandleFunc("/api/alerts/events/clear", handleClearEvents)
+	// --- Alert 相关 (alert_handler.go) ---
+	mux.HandleFunc("/api/alerts/rules", h.ListRules)
+	mux.HandleFunc("/api/alerts/rules/add", h.AddRule)
+	mux.HandleFunc("/api/alerts/rules/delete", h.DeleteRule)
+	mux.HandleFunc("/api/alerts/events", h.GetAlerts)
+	mux.HandleFunc("/api/alerts/events/delete", h.DeleteEvent)
+	mux.HandleFunc("/api/alerts/events/clear", h.ClearEvents)
+
 	// --- WebSocket ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 
 	// --- 静态资源 ---
+	// 文件下载 (uploadPath 来自参数，不再依赖全局变量)
 	fsUploads := http.FileServer(http.Dir(uploadPath))
 	mux.Handle("/download/", http.StripPrefix("/download/", fsUploads))
-	mux.Handle("/", http.FileServer(http.FS(assets)))
-}
 
-// 辅助函数：广播最新系统视图
-func broadcastUpdate() {
-	// 需要传入 instManager 来组装完整视图
-	data := sysManager.GetFullView(instManager)
-	ws.BroadcastSystems(data)
+	// 前端页面
+	mux.Handle("/", http.FileServer(http.FS(assets)))
 }

@@ -9,7 +9,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	// "ops-system/internal/master/store" // ❌ 删除旧引用
 	"ops-system/pkg/protocol"
 )
 
@@ -19,7 +18,7 @@ var upgrader = websocket.Upgrader{
 
 // handleGetOpLogs 分页查询操作日志
 // POST /api/logs
-func handleGetOpLogs(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) GetOpLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -32,7 +31,7 @@ func handleGetOpLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 使用全局变量 logManager (在 server.go 中定义)
-	logs, err := logManager.GetLogs(req.Page, req.PageSize, req.Keyword)
+	logs, err := h.logMgr.GetLogs(req.Page, req.PageSize, req.Keyword)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -44,7 +43,7 @@ func handleGetOpLogs(w http.ResponseWriter, r *http.Request) {
 
 // handleGetInstanceLogFiles 获取实例日志文件列表
 // GET /api/instance/logs/files?instance_id=...
-func handleGetInstanceLogFiles(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) GetInstanceLogFiles(w http.ResponseWriter, r *http.Request) {
 	instID := r.URL.Query().Get("instance_id")
 	if instID == "" {
 		http.Error(w, "missing instance_id", 400)
@@ -52,7 +51,7 @@ func handleGetInstanceLogFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. 获取实例
-	inst, ok := instManager.GetInstance(instID)
+	inst, ok := h.instMgr.GetInstance(instID)
 	if !ok {
 		http.Error(w, "instance not found", 404)
 		return
@@ -60,7 +59,7 @@ func handleGetInstanceLogFiles(w http.ResponseWriter, r *http.Request) {
 
 	// 2. 获取节点 (用于获取 WorkerURL)
 	// 【关键修改】使用 nodeManager 替代 store.GetNode
-	node, exists := nodeManager.GetNode(inst.NodeIP)
+	node, exists := h.nodeMgr.GetNode(inst.NodeIP)
 	if !exists {
 		http.Error(w, "node offline", 404)
 		return
@@ -90,18 +89,18 @@ func handleGetInstanceLogFiles(w http.ResponseWriter, r *http.Request) {
 
 // handleInstanceLogStream 代理日志 WebSocket
 // GET /api/instance/logs/stream?instance_id=...&log_key=...
-func handleInstanceLogStream(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) InstanceLogStream(w http.ResponseWriter, r *http.Request) {
 	instID := r.URL.Query().Get("instance_id")
 	logKey := r.URL.Query().Get("log_key")
 
-	inst, ok := instManager.GetInstance(instID)
+	inst, ok := h.instMgr.GetInstance(instID)
 	if !ok {
 		http.Error(w, "Instance not found", 404)
 		return
 	}
 
 	// 【关键修改】使用 nodeManager
-	node, exists := nodeManager.GetNode(inst.NodeIP)
+	node, exists := h.nodeMgr.GetNode(inst.NodeIP)
 	if !exists {
 		http.Error(w, "Node offline", 404)
 		return

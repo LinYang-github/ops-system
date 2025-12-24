@@ -9,9 +9,9 @@ import (
 )
 
 // handleNacosSettings 获取/保存连接配置
-func handleNacosSettings(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) NacosSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		cfg, err := configManager.GetNacosConfig() // 注意：这里需要通过 pkgManager 或 server.go 注入
+		cfg, err := h.configMgr.GetNacosConfig() // 注意：这里需要通过 pkgManager 或 server.go 注入
 		if err != nil {
 			// 没配置过返回空对象，状态 200
 			json.NewEncoder(w).Encode(map[string]string{})
@@ -29,7 +29,7 @@ func handleNacosSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		if err := configManager.SaveNacosConfig(cfg); err != nil {
+		if err := h.configMgr.SaveNacosConfig(cfg); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -38,9 +38,9 @@ func handleNacosSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNacosNamespaces 获取命名空间列表
-func handleNacosNamespaces(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) NacosNamespaces(w http.ResponseWriter, r *http.Request) {
 	// Nacos API: /nacos/v1/console/namespaces
-	res, err := configManager.ProxyGet("/nacos/v1/console/namespaces", url.Values{})
+	res, err := h.configMgr.ProxyGet("/nacos/v1/console/namespaces", url.Values{})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -50,7 +50,7 @@ func handleNacosNamespaces(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNacosConfigs 获取配置列表
-func handleNacosConfigs(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) NacosConfigs(w http.ResponseWriter, r *http.Request) {
 	// Nacos API: /nacos/v1/cs/configs
 	q := r.URL.Query()
 	params := url.Values{}
@@ -62,7 +62,7 @@ func handleNacosConfigs(w http.ResponseWriter, r *http.Request) {
 		params.Set("tenant", t) // Namespace ID
 	}
 
-	res, err := configManager.ProxyGet("/nacos/v1/cs/configs", params)
+	res, err := h.configMgr.ProxyGet("/nacos/v1/cs/configs", params)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -72,7 +72,7 @@ func handleNacosConfigs(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNacosConfigDetail 获取具体配置内容
-func handleNacosConfigDetail(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) NacosConfigDetail(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	params := url.Values{}
 	params.Set("dataId", q.Get("dataId"))
@@ -84,7 +84,7 @@ func handleNacosConfigDetail(w http.ResponseWriter, r *http.Request) {
 	// 这里的接口还是列表接口，Nacos 2.x 获取详情通常也是 GET /cs/configs?show=all...
 	// 或者直接 GET /cs/configs?dataId=..&group=.. 返回纯文本
 	// 这里我们直接代理，前端收到的是纯文本
-	res, err := configManager.ProxyGet("/nacos/v1/cs/configs", params)
+	res, err := h.configMgr.ProxyGet("/nacos/v1/cs/configs", params)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -93,7 +93,7 @@ func handleNacosConfigDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNacosPublish 发布/修改配置
-func handleNacosPublish(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) NacosPublish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "405", 405)
 		return
@@ -118,7 +118,7 @@ func handleNacosPublish(w http.ResponseWriter, r *http.Request) {
 		form.Set("tenant", req.Tenant)
 	}
 
-	res, err := configManager.ProxyPost("/nacos/v1/cs/configs", form)
+	res, err := h.configMgr.ProxyPost("/nacos/v1/cs/configs", form)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -128,7 +128,7 @@ func handleNacosPublish(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNacosDelete 删除配置
-func handleNacosDelete(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) NacosDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DataId string `json:"dataId"`
 		Group  string `json:"group"`
@@ -136,7 +136,7 @@ func handleNacosDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	if err := configManager.ProxyDelete(req.DataId, req.Group, req.Tenant); err != nil {
+	if err := h.configMgr.ProxyDelete(req.DataId, req.Group, req.Tenant); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}

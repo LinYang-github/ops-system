@@ -8,7 +8,7 @@ import (
 )
 
 // handleUploadPackage 处理上传 (Stream 模式，支持大文件)
-func handleUploadPackage(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) UploadPackage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -35,7 +35,7 @@ func handleUploadPackage(w http.ResponseWriter, r *http.Request) {
 		// 找到名为 "file" 的表单项
 		if part.FormName() == "file" {
 			// 3. 将流直接传给 Manager
-			manifest, err := pkgManager.SavePackageStream(part, part.FileName())
+			manifest, err := h.pkgMgr.SavePackageStream(part, part.FileName())
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Process failed: %v", err), 400)
 				return
@@ -56,9 +56,9 @@ func handleUploadPackage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListPackages 获取包列表
-func handleListPackages(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) ListPackages(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
-	list, err := pkgManager.ListPackages()
+	list, err := h.pkgMgr.ListPackages()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -68,7 +68,7 @@ func handleListPackages(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeletePackage 删除包
-func handleDeletePackage(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) DeletePackage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -82,7 +82,7 @@ func handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", 400)
 		return
 	}
-	if err := pkgManager.DeletePackage(req.Name, req.Version); err != nil {
+	if err := h.pkgMgr.DeletePackage(req.Name, req.Version); err != nil {
 		http.Error(w, fmt.Sprintf("Delete failed: %v", err), 500)
 		return
 	}
@@ -91,7 +91,7 @@ func handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 
 // handleGetPackageManifest 获取包配置详情 (修复报错的核心函数)
 // URL: /api/packages/manifest?name=...&version=...
-func handleGetPackageManifest(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) GetPackageManifest(w http.ResponseWriter, r *http.Request) {
 	// 1. 获取参数
 	query := r.URL.Query()
 	name := query.Get("name")
@@ -103,7 +103,7 @@ func handleGetPackageManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. 调用 Manager 读取
-	manifest, err := pkgManager.GetManifest(name, version)
+	manifest, err := h.pkgMgr.GetManifest(name, version)
 	if err != nil {
 		http.Error(w, err.Error(), 404)
 		return

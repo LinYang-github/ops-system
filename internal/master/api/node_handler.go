@@ -14,7 +14,7 @@ import (
 )
 
 // handleHeartbeat 处理心跳
-func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -42,86 +42,86 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. 更新数据库
-	nodeManager.HandleHeartbeat(req, remoteIP)
+	h.nodeMgr.HandleHeartbeat(req, remoteIP)
 
 	// 3. 广播
-	ws.BroadcastNodes(nodeManager.GetAllNodes())
+	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
 	w.Write([]byte("pong"))
 }
 
 // handleListNodes 获取列表
-func handleListNodes(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nodeManager.GetAllNodes())
+	json.NewEncoder(w).Encode(h.nodeMgr.GetAllNodes())
 }
 
 // handleAddNode 添加规划节点
-func handleAddNode(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) AddNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP   string `json:"ip"`
 		Name string `json:"name"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	if err := nodeManager.AddPlannedNode(req.IP, req.Name); err != nil {
+	if err := h.nodeMgr.AddPlannedNode(req.IP, req.Name); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	ws.BroadcastNodes(nodeManager.GetAllNodes())
+	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleDeleteNode 删除节点
-func handleDeleteNode(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP string `json:"ip"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	if err := nodeManager.DeleteNode(req.IP); err != nil {
+	if err := h.nodeMgr.DeleteNode(req.IP); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	// 记录日志
-	logManager.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.IP, "", "success")
-	ws.BroadcastNodes(nodeManager.GetAllNodes())
+	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.IP, "", "success")
+	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleRenameNode 重命名
-func handleRenameNode(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP   string `json:"ip"`
 		Name string `json:"name"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	if err := nodeManager.RenameNode(req.IP, req.Name); err != nil {
+	if err := h.nodeMgr.RenameNode(req.IP, req.Name); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	ws.BroadcastNodes(nodeManager.GetAllNodes())
+	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleResetNodeName 重置名称
-func handleResetNodeName(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) ResetNodeName(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP string `json:"ip"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	if err := nodeManager.ResetNodeName(req.IP); err != nil {
+	if err := h.nodeMgr.ResetNodeName(req.IP); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	ws.BroadcastNodes(nodeManager.GetAllNodes())
+	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleTriggerCmd 下发 CMD 指令 (调试用)
-func handleTriggerCmd(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 	type TriggerReq struct {
 		TargetIP string `json:"target_ip"`
 		Command  string `json:"command"`
@@ -133,7 +133,7 @@ func handleTriggerCmd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, exists := nodeManager.GetNode(trigger.TargetIP)
+	node, exists := h.nodeMgr.GetNode(trigger.TargetIP)
 	if !exists {
 		http.Error(w, "Node not found or offline", 404)
 		return
@@ -156,7 +156,7 @@ func handleTriggerCmd(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	// 记录日志
-	logManager.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetIP, trigger.Command, "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetIP, trigger.Command, "success")
 
 	// 透传 Body
 	// io.Copy(w, resp.Body) // 需要 import io

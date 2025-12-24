@@ -11,7 +11,7 @@ import (
 
 // handleQueryRange 模拟 Prometheus 查询接口
 // GET /api/monitor/query_range?query=node_cpu_usage&instance=1.2.3.4&start=...&end=...
-func handleQueryRange(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) QueryRange(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	metric := q.Get("query")   // e.g. node_cpu_usage
 	ip := q.Get("instance")    // e.g. 192.168.1.10
@@ -36,7 +36,7 @@ func handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. 查询数据
-	points := monitorStore.QueryRange(metric, ip, start, end)
+	points := h.monitorStore.QueryRange(metric, ip, start, end)
 
 	// 2. 格式化为 Prometheus 结构
 	resp := monitor.FormatPrometheusResponse(metric, ip, points)

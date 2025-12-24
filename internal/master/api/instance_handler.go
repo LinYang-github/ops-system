@@ -17,9 +17,9 @@ import (
 // ==========================================
 
 // sendInstanceCommand 向 Worker 发送实例控制指令
-func sendInstanceCommand(inst *protocol.InstanceInfo, action string) error {
+func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action string) error {
 	// 1. 获取节点信息
-	node, exists := nodeManager.GetNode(inst.NodeIP)
+	node, exists := h.nodeMgr.GetNode(inst.NodeIP)
 	if !exists {
 		return fmt.Errorf("node %s offline", inst.NodeIP)
 	}
@@ -41,7 +41,7 @@ func sendInstanceCommand(inst *protocol.InstanceInfo, action string) error {
 // ==========================================
 
 // handleDeployInstance 部署实例
-func handleDeployInstance(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	type DeployReq struct {
 		SystemID       string `json:"system_id"`
 		NodeIP         string `json:"node_ip"`
@@ -54,13 +54,13 @@ func handleDeployInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, exists := nodeManager.GetNode(req.NodeIP)
+	node, exists := h.nodeMgr.GetNode(req.NodeIP)
 	if !exists {
 		http.Error(w, "Node offline", 404)
 		return
 	}
 
-	downloadURL, err := pkgManager.GetDownloadURL(req.ServiceName, req.ServiceVersion, r.Host)
+	downloadURL, err := h.pkgMgr.GetDownloadURL(req.ServiceName, req.ServiceVersion, r.Host)
 	if err != nil {
 		http.Error(w, "Generate URL failed: "+err.Error(), 500)
 		return
@@ -68,7 +68,7 @@ func handleDeployInstance(w http.ResponseWriter, r *http.Request) {
 	instanceID := fmt.Sprintf("inst-%d", time.Now().UnixNano())
 
 	// 1. 使用 instManager 注册
-	instManager.RegisterInstance(&protocol.InstanceInfo{
+	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID:             instanceID,
 		SystemID:       req.SystemID,
 		NodeIP:         req.NodeIP,
@@ -77,7 +77,7 @@ func handleDeployInstance(w http.ResponseWriter, r *http.Request) {
 		Status:         "deploying",
 	})
 
-	broadcastUpdate()
+	h.broadcastUpdate()
 
 	// 2. 构造 Worker 请求
 	workerReq := protocol.DeployRequest{
@@ -92,21 +92,21 @@ func handleDeployInstance(w http.ResponseWriter, r *http.Request) {
 
 	// 3. 发送请求
 	if err := utils.PostJSON(targetURL, reqBody); err != nil {
-		instManager.UpdateInstanceStatus(instanceID, "error", 0)
-		logManager.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, "Failed: "+err.Error(), "fail")
-		broadcastUpdate()
+		h.instMgr.UpdateInstanceStatus(instanceID, "error", 0)
+		h.logMgr.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, "Failed: "+err.Error(), "fail")
+		h.broadcastUpdate()
 		http.Error(w, fmt.Sprintf("Worker deploy failed: %v", err), 500)
 		return
 	}
 
 	logDetail := fmt.Sprintf("Node: %s, Ver: %s, ID: %s", req.NodeIP, req.ServiceVersion, instanceID)
-	logManager.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, logDetail, "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, logDetail, "success")
 
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleInstanceAction 单实例启停
-func handleInstanceAction(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) InstanceAction(w http.ResponseWriter, r *http.Request) {
 	var req protocol.InstanceActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -114,30 +114,30 @@ func handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 使用 instManager 获取实例
-	inst, ok := instManager.GetInstance(req.InstanceID)
+	inst, ok := h.instMgr.GetInstance(req.InstanceID)
 	if !ok {
 		http.Error(w, "Instance not found", 404)
 		return
 	}
 
 	// 发送指令
-	if err := sendInstanceCommand(inst, req.Action); err != nil {
-		logManager.RecordLog(utils.GetClientIP(r), req.Action+"_instance", "instance", inst.ServiceName, "Failed: "+err.Error(), "fail")
+	if err := h.sendInstanceCommand(inst, req.Action); err != nil {
+		h.logMgr.RecordLog(utils.GetClientIP(r), req.Action+"_instance", "instance", inst.ServiceName, "Failed: "+err.Error(), "fail")
 		http.Error(w, fmt.Sprintf("Failed to send command: %v", err), 500)
 		return
 	}
 
 	if req.Action == "destroy" {
-		instManager.RemoveInstance(req.InstanceID)
-		broadcastUpdate()
+		h.instMgr.RemoveInstance(req.InstanceID)
+		h.broadcastUpdate()
 	}
 
-	logManager.RecordLog(utils.GetClientIP(r), req.Action+"_instance", "instance", inst.ServiceName, "ID: "+inst.ID, "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), req.Action+"_instance", "instance", inst.ServiceName, "ID: "+inst.ID, "success")
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleWorkerInstanceStatusReport 状态上报
-func handleWorkerInstanceStatusReport(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) WorkerInstanceStatusReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -149,14 +149,14 @@ func handleWorkerInstanceStatusReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 使用 instManager 更新
-	instManager.UpdateInstanceFullStatus(&report)
-	broadcastUpdate()
+	h.instMgr.UpdateInstanceFullStatus(&report)
+	h.broadcastUpdate()
 
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleSystemAction 批量操作
-func handleSystemAction(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) SystemAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -172,7 +172,7 @@ func handleSystemAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 使用 instManager
-	instances, err := instManager.GetSystemInstances(req.SystemID)
+	instances, err := h.instMgr.GetSystemInstances(req.SystemID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -202,7 +202,7 @@ func handleSystemAction(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(target *protocol.InstanceInfo) {
 			defer wg.Done()
-			if err := sendInstanceCommand(target, req.Action); err != nil {
+			if err := h.sendInstanceCommand(target, req.Action); err != nil {
 				log.Printf("[BatchError] ID=%s Action=%s Err=%v", target.ID, req.Action, err)
 				mu.Lock()
 				errCount++
@@ -214,7 +214,7 @@ func handleSystemAction(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	logDetail := fmt.Sprintf("Action: %s, Count: %d, Failed: %d", req.Action, len(targets), errCount)
-	logManager.RecordLog(utils.GetClientIP(r), "batch_"+req.Action, "system", req.SystemID, logDetail, "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "batch_"+req.Action, "system", req.SystemID, logDetail, "success")
 
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "ok",
@@ -223,7 +223,7 @@ func handleSystemAction(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRegisterExternal 注册纳管实例
-func handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request) {
 	// 1. 解析请求 (包含 Config 和 NodeIP)
 	type RegExtReq struct {
 		SystemID string                  `json:"system_id"`
@@ -233,7 +233,7 @@ func handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
 	var req RegExtReq
 	json.NewDecoder(r.Body).Decode(&req)
 
-	node, exists := nodeManager.GetNode(req.NodeIP)
+	node, exists := h.nodeMgr.GetNode(req.NodeIP)
 	if !exists {
 		http.Error(w, "Node offline", 404)
 		return
@@ -242,12 +242,12 @@ func handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
 	instanceID := fmt.Sprintf("ext-%d", time.Now().UnixNano())
 
 	// 2. 入库 (服务名直接用 Config.Name)
-	instManager.RegisterInstance(&protocol.InstanceInfo{
+	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID: instanceID, SystemID: req.SystemID, NodeIP: req.NodeIP,
 		ServiceName: req.Config.Name, ServiceVersion: "external",
 		Status: "stopped",
 	})
-	broadcastUpdate()
+	h.broadcastUpdate()
 
 	// 3. 发送给 Worker
 	workerReq := protocol.RegisterExternalRequest{
@@ -259,8 +259,8 @@ func handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
 	targetURL := fmt.Sprintf("http://%s:%d/api/external/register", node.IP, node.Port)
 
 	if err := utils.PostJSON(targetURL, reqBytes); err != nil {
-		instManager.UpdateInstanceStatus(instanceID, "error", 0)
-		broadcastUpdate()
+		h.instMgr.UpdateInstanceStatus(instanceID, "error", 0)
+		h.broadcastUpdate()
 		http.Error(w, fmt.Sprintf("Worker register failed: %v", err), 500)
 		return
 	}
