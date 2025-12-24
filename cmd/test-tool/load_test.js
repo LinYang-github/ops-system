@@ -1,36 +1,25 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-// 配置：模拟 50 个并发用户
 export const options = {
-  vus: 50,
-  duration: '30s',
+  vus: 100, // 100个并发用户
+  duration: '30s', // 持续30秒
 };
 
-const BASE_URL = 'http://localhost:8080';
-
 export default function () {
-  // 1. 获取系统列表 (读性能)
-  const resList = http.get(`${BASE_URL}/api/systems`);
-  check(resList, {
-    'status is 200': (r) => r.status === 200,
-    'duration < 200ms': (r) => r.timings.duration < 200,
-  });
-
-  // 2. 模拟创建系统 (写性能)
+  // 模拟心跳上报接口 (这是最高频的)
   const payload = JSON.stringify({
-    name: `PerfTest-${__VU}-${__ITER}`,
-    description: 'Load testing system creation'
+    port: 8081,
+    info: { hostname: "load-test", ip: "1.2.3.4" },
+    status: { cpu_usage: 50.0 }
   });
   
-  const params = {
-    headers: { 'Content-Type': 'application/json' },
-  };
-
-  const resCreate = http.post(`${BASE_URL}/api/systems/create`, payload, params);
-  check(resCreate, {
-    'create status 200': (r) => r.status === 200,
+  const res = http.post('http://localhost:8080/api/worker/heartbeat', payload);
+  
+  check(res, {
+    'status is 200': (r) => r.status === 200,
+    'duration < 100ms': (r) => r.timings.duration < 100,
   });
-
-  sleep(1);
+  
+  sleep(3); // 模拟心跳间隔
 }

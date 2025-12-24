@@ -1,68 +1,209 @@
 {
   "version": "2.0.0",
   "tasks": [
-    {
-      "label": "build:master",
-      "type": "shell",
-      "command": "go build -o master ./cmd/master/main.go",
-      "options": {
-        "cwd": "${workspaceFolder}"
+      // ============================================================
+      // 1. 前端任务 (Web Frontend)
+      // ============================================================
+      {
+          "label": "1. [Init] Install Web Deps",
+          "type": "shell",
+          "command": "npm install",
+          "options": {
+              "cwd": "${workspaceFolder}/web"
+          },
+          "group": "none",
+          "presentation": {
+              "reveal": "silent"
+          }
       },
-      "group": {
-        "kind": "build",
-        "isDefault": false
+      {
+          "label": "2. [Build] Web Frontend (Dist)",
+          "type": "shell",
+          "command": "npm run build",
+          "options": {
+              "cwd": "${workspaceFolder}/web"
+          },
+          "group": "build",
+          "dependsOn": "1. [Init] Install Web Deps",
+          "detail": "生成 web/dist 目录，供 Master 嵌入使用"
       },
-      "presentation": {
-        "panel": "new",
-        "reveal": "always",
-        "focus": false
+      {
+          "label": "3. [Dev] Start Web Server",
+          "type": "shell",
+          "command": "npm run dev",
+          "options": {
+              "cwd": "${workspaceFolder}/web"
+          },
+          "isBackground": true,
+          "problemMatcher": {
+              "owner": "custom",
+              "pattern": {
+                  "regexp": "^$"
+              },
+              "background": {
+                  "activeOnStart": true,
+                  "beginsPattern": "VITE v",
+                  "endsPattern": "Network:"
+              }
+          },
+          "detail": "启动前端开发服务器 (localhost:5173)"
       },
-      "problemMatcher": []
-    },
-    {
-      "label": "build:worker",
-      "type": "shell",
-      "command": "go build -o worker ./cmd/worker/main.go",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": "build",
-      "presentation": {
-        "panel": "new",
-        "reveal": "always",
-        "focus": false
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "build:web",
-      "type": "shell",
-      "command": "npm run build",
-      "options": {
-        "cwd": "${workspaceFolder}/web"
-      },
-      "group": "build",
-      "presentation": {
-        "panel": "new",
-        "reveal": "always",
-        "focus": false
-      },
-      "problemMatcher": []
-    },
 
-    // 🔥 一键并行构建（推荐使用）
-    {
-      "label": "build:all",
-      "dependsOn": [
-        "build:master",
-        "build:worker",
-        "build:web"
-      ],
-      "dependsOrder": "parallel",
-      "group": {
-        "kind": "build",
-        "isDefault": true
+      // ============================================================
+      // 2. 后端构建 (Backend Build)
+      // ============================================================
+      {
+          "label": "4. [Build] Master (Full)",
+          "type": "shell",
+          "command": "go build",
+          "args": [
+              "-o",
+              "${workspaceFolder}/master${exe}", // 自动适配 .exe
+              "./cmd/master/main.go"
+          ],
+          "group": {
+              "kind": "build",
+              "isDefault": true
+          },
+          "dependsOn": "2. [Build] Web Frontend (Dist)", // 强依赖前端构建
+          "problemMatcher": "$go",
+          "detail": "编译 Master (包含前端 Embed 资源)"
+      },
+      {
+          "label": "4. [Build] Master (Fast)",
+          "type": "shell",
+          "command": "go build",
+          "args": [
+              "-o",
+              "${workspaceFolder}/master${exe}",
+              "./cmd/master/main.go"
+          ],
+          "group": "build",
+          "problemMatcher": "$go",
+          "detail": "仅编译 Master Go 代码 (不重新构建前端，开发用)"
+      },
+      {
+          "label": "5. [Build] Worker",
+          "type": "shell",
+          "command": "go build",
+          "args": [
+              "-o",
+              "${workspaceFolder}/worker${exe}",
+              "./cmd/worker/main.go"
+          ],
+          "group": "build",
+          "problemMatcher": "$go",
+          "detail": "编译 Worker Agent"
+      },
+      {
+          "label": "6. [Build] Demo App",
+          "type": "shell",
+          "command": "go build",
+          "args": [
+              "-o",
+              "${workspaceFolder}/demo-app${exe}",
+              "./cmd/demo-app/main.go"
+          ],
+          "group": "build",
+          "problemMatcher": "$go",
+          "detail": "编译测试用的 Demo App"
+      },
+
+      // ============================================================
+      // 3. 运行与测试 (Run & Test)
+      // ============================================================
+      {
+          "label": "7. [Run] Start Master",
+          "type": "shell",
+          "command": "${workspaceFolder}/master${exe}",
+          // "args": ["-port", ":8080"], // 如果需要传参可解注
+          "dependsOn": "4. [Build] Master (Fast)",
+          "problemMatcher": [],
+          "group": "test",
+          "detail": "启动 Master 服务"
+      },
+      {
+          "label": "8. [Run] Start Worker",
+          "type": "shell",
+          "command": "${workspaceFolder}/worker${exe}",
+          // "args": ["-port", "8081", "-master", "http://127.0.0.1:8080"],
+          "dependsOn": "5. [Build] Worker",
+          "problemMatcher": [],
+          "group": "test",
+          "detail": "启动 Worker 节点"
+      },
+      {
+          "label": "9. [Run] Mock Cluster (Stress Test)",
+          "type": "shell",
+          "command": "go run ./cmd/test-tool/mock_cluster.go",
+          "args": [
+              "-count", "200",
+              "-duration", "30s"
+          ],
+          "group": "test",
+          "detail": "启动 200 个模拟节点进行压力测试"
+      },
+
+      // ============================================================
+      // 4. 环境清理 (Clean Up) - 跨平台适配
+      // ============================================================
+      {
+          "label": "0. [Clean] Reset Environment",
+          "type": "shell",
+          "group": "none",
+          "detail": "删除数据库、上传文件、实例目录及编译产物",
+          "windows": {
+              "command": "del /q ops_data.db master.exe worker.exe demo-app.exe & rmdir /s /q uploads instances"
+          },
+          "linux": {
+              "command": "rm -rf ops_data.db master worker demo-app uploads/ instances/"
+          },
+          "osx": {
+              "command": "rm -rf ops_data.db master worker demo-app uploads/ instances/"
+          }
+      },
+      
+      // ============================================================
+      // 5. 辅助工具
+      // ============================================================
+      {
+          "label": "Go Mod Tidy",
+          "type": "shell",
+          "command": "go mod tidy",
+          "group": "none"
       }
-    }
-  ]
+  ],
+  
+  // 定义变量，自动处理 Windows 下的 .exe 后缀
+  "inputs": [],
+  "options": {
+      "env": {
+          // 设置 Go 代理，确保国内环境能下载依赖
+          "GOPROXY": "https://goproxy.cn,direct"
+      }
+  },
+  
+  // Windows 特定配置：自动添加 .exe 后缀变量
+  "windows": {
+      "options": {
+          "env": {
+              "exe": ".exe"
+          }
+      }
+  },
+  // Linux/Mac 特定配置：后缀为空
+  "linux": {
+      "options": {
+          "env": {
+              "exe": ""
+          }
+      }
+  },
+  "osx": {
+      "options": {
+          "env": {
+              "exe": ""
+          }
+      }
+  }
 }
