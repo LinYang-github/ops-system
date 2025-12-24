@@ -208,7 +208,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import axios from 'axios'
+import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { wsStore } from '../store/wsStore'
 import { Search, Plus, Refresh, Monitor, Edit, ArrowDown, Terminal, RefreshLeft, Delete, InfoFilled, View } from '@element-plus/icons-vue'
@@ -277,8 +277,8 @@ const handleCurrentChange = (val) => {
 const fetchNodes = async () => {
   loading.value = true
   try {
-    const res = await axios.get('/api/nodes')
-    wsStore.nodes = res.data || []
+    const res = await request.get('/api/nodes')
+    wsStore.nodes = res || []
     ElMessage.success('数据已刷新')
   } catch(e) { ElMessage.error('刷新失败') } 
   finally { loading.value = false }
@@ -287,7 +287,7 @@ const fetchNodes = async () => {
 const addNode = async () => {
   if(!newNode.ip) return ElMessage.warning('请输入 IP')
   try {
-    await axios.post('/api/nodes/add', { ip: newNode.ip, name: newNode.name || newNode.ip })
+    await request.post('/api/nodes/add', { ip: newNode.ip, name: newNode.name || newNode.ip })
     addDialogVisible.value = false
     newNode.ip = ''; newNode.name = ''
     ElMessage.success('添加成功')
@@ -297,10 +297,10 @@ const addNode = async () => {
 
 const handleCommand = (cmd, row) => {
   if (cmd === 'reset') {
-    axios.post('/api/nodes/reset_name', { ip: row.ip }).then(() => { ElMessage.success('重置成功'); fetchNodes() })
+    request.post('/api/nodes/reset_name', { ip: row.ip }).then(() => { ElMessage.success('重置成功'); fetchNodes() })
   } else if (cmd === 'delete') {
     ElMessageBox.confirm(`确定删除节点 ${row.ip}?`, '警告', { type: 'warning' }).then(async () => {
-        await axios.post('/api/nodes/delete', { ip: row.ip })
+        await request.post('/api/nodes/delete', { ip: row.ip })
         ElMessage.success('已删除')
         fetchNodes()
     })
@@ -329,12 +329,12 @@ const execCmd = async () => {
   cmdDialog.error = ''
   
   try {
-    const res = await axios.post('/api/ctrl/cmd', {
+    const res = await request.post('/api/ctrl/cmd', {
       target_ip: cmdDialog.targetIP,
       command: cmdDialog.command
     })
-    cmdDialog.result = res.data.output
-    cmdDialog.error = res.data.error
+    cmdDialog.result = res.output
+    cmdDialog.error = res.error
   } catch (e) {
     cmdDialog.error = "请求失败: " + e.message
   } finally {
@@ -343,7 +343,7 @@ const execCmd = async () => {
 }
 
 const openRename = (row) => { renameDialog.ip = row.ip; renameDialog.name = row.name; renameDialog.visible = true }
-const confirmRename = async () => { await axios.post('/api/nodes/rename', { ip: renameDialog.ip, name: renameDialog.name }); renameDialog.visible = false; fetchNodes() }
+const confirmRename = async () => { await request.post('/api/nodes/rename', { ip: renameDialog.ip, name: renameDialog.name }); renameDialog.visible = false; fetchNodes() }
 
 const getStatusType = (s) => s==='online'?'success':(s==='planned'?'info':'danger')
 const formatTime = (ts) => { if(!ts)return'-'; const d=Math.floor(Date.now()/1000-ts); if(d<60)return'刚刚'; if(d<3600)return`${Math.floor(d/60)}分前`; return new Date(ts*1000).toLocaleDateString() }

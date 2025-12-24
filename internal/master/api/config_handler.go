@@ -2,54 +2,72 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 
 	"ops-system/internal/master/manager"
+	"ops-system/pkg/code"
+	"ops-system/pkg/e"
+	"ops-system/pkg/response"
 )
 
-// handleNacosSettings 获取/保存连接配置
+// NacosSettings 获取/保存连接配置
+// GET/POST /api/nacos/settings
 func (h *ServerHandler) NacosSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		cfg, err := h.configMgr.GetNacosConfig() // 注意：这里需要通过 pkgManager 或 server.go 注入
+		cfg, err := h.configMgr.GetNacosConfig()
 		if err != nil {
-			// 没配置过返回空对象，状态 200
-			json.NewEncoder(w).Encode(map[string]string{})
+			// 没配置过返回空对象，不算错误
+			response.Success(w, map[string]string{})
 			return
 		}
 		// 处于安全考虑，不返回密码
 		cfg.Password = "******"
-		json.NewEncoder(w).Encode(cfg)
+		response.Success(w, cfg)
 		return
 	}
 
 	if r.Method == http.MethodPost {
 		var cfg manager.NacosConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-			http.Error(w, err.Error(), 400)
+			response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 			return
 		}
 		if err := h.configMgr.SaveNacosConfig(cfg); err != nil {
-			http.Error(w, err.Error(), 500)
+			response.Error(w, e.New(code.DatabaseError, "保存配置失败", err))
 			return
 		}
-		w.Write([]byte(`{"status":"ok"}`))
-	}
-}
-
-// handleNacosNamespaces 获取命名空间列表
-func (h *ServerHandler) NacosNamespaces(w http.ResponseWriter, r *http.Request) {
-	// Nacos API: /nacos/v1/console/namespaces
-	res, err := h.configMgr.ProxyGet("/nacos/v1/console/namespaces", url.Values{})
-	if err != nil {
-		http.Error(w, err.Error(), 500)
+		response.Success(w, nil)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(res)
+
+	response.Error(w, e.New(code.MethodNotAllowed, "Method not allowed", nil))
 }
 
-// handleNacosConfigs 获取配置列表
+// NacosNamespaces 获取命名空间列表
+// GET /api/nacos/namespaces
+func (h *ServerHandler) NacosNamespaces(w http.ResponseWriter, r *http.Request) {
+	// Nacos API: /nacos/v1/console/namespaces
+	resBytes, err := h.configMgr.ProxyGet("/nacos/v1/console/namespaces", url.Values{})
+	if err != nil {
+		response.Error(w, e.New(code.NacosError, "获取命名空间失败", err))
+		return
+	}
+
+	// 将 Nacos 返回的 JSON 字节流转为对象，以便包裹在标准响应结构中
+	var nacosResp interface{}
+	if err := json.Unmarshal(resBytes, &nacosResp); err != nil {
+		// 如果转换失败（可能是纯文本报错），直接返回字符串
+		response.Success(w, string(resBytes))
+		return
+	}
+
+	response.Success(w, nacosResp)
+}
+
+// NacosConfigs 获取配置列表
+// GET /api/nacos/configs
 func (h *ServerHandler) NacosConfigs(w http.ResponseWriter, r *http.Request) {
 	// Nacos API: /nacos/v1/cs/configs
 	q := r.URL.Query()
@@ -62,16 +80,22 @@ func (h *ServerHandler) NacosConfigs(w http.ResponseWriter, r *http.Request) {
 		params.Set("tenant", t) // Namespace ID
 	}
 
-	res, err := h.configMgr.ProxyGet("/nacos/v1/cs/configs", params)
+	resBytes, err := h.configMgr.ProxyGet("/nacos/v1/cs/configs", params)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		response.Error(w, e.New(code.NacosError, "查询配置列表失败", err))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(res)
+
+	var nacosResp interface{}
+	if err := json.Unmarshal(resBytes, &nacosResp); err != nil {
+		response.Success(w, string(resBytes))
+		return
+	}
+	response.Success(w, nacosResp)
 }
 
-// handleNacosConfigDetail 获取具体配置内容
+// NacosConfigDetail 获取具体配置内容
+// GET /api/nacos/config/detail
 func (h *ServerHandler) NacosConfigDetail(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	params := url.Values{}
@@ -81,21 +105,22 @@ func (h *ServerHandler) NacosConfigDetail(w http.ResponseWriter, r *http.Request
 		params.Set("tenant", t)
 	}
 
-	// 这里的接口还是列表接口，Nacos 2.x 获取详情通常也是 GET /cs/configs?show=all...
-	// 或者直接 GET /cs/configs?dataId=..&group=.. 返回纯文本
-	// 这里我们直接代理，前端收到的是纯文本
-	res, err := h.configMgr.ProxyGet("/nacos/v1/cs/configs", params)
+	// Nacos 获取详情直接返回配置内容字符串
+	resBytes, err := h.configMgr.ProxyGet("/nacos/v1/cs/configs", params)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		response.Error(w, e.New(code.NacosError, "获取配置详情失败", err))
 		return
 	}
-	w.Write(res)
+
+	// 直接返回内容字符串，response.Success 会将其放入 "data" 字段
+	response.Success(w, string(resBytes))
 }
 
-// handleNacosPublish 发布/修改配置
+// NacosPublish 发布/修改配置
+// POST /api/nacos/config/publish
 func (h *ServerHandler) NacosPublish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
+		response.Error(w, e.New(code.MethodNotAllowed, "Method not allowed", nil))
 		return
 	}
 
@@ -107,7 +132,10 @@ func (h *ServerHandler) NacosPublish(w http.ResponseWriter, r *http.Request) {
 		Type    string `json:"type"`
 		Tenant  string `json:"tenant"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
+		return
+	}
 
 	form := url.Values{}
 	form.Set("dataId", req.DataId)
@@ -118,27 +146,38 @@ func (h *ServerHandler) NacosPublish(w http.ResponseWriter, r *http.Request) {
 		form.Set("tenant", req.Tenant)
 	}
 
-	res, err := h.configMgr.ProxyPost("/nacos/v1/cs/configs", form)
+	resBytes, err := h.configMgr.ProxyPost("/nacos/v1/cs/configs", form)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		response.Error(w, e.New(code.NacosError, fmt.Sprintf("发布配置失败: %v", err), err))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(res)
+
+	// Nacos 发布成功通常返回 "true" 字符串
+	response.Success(w, string(resBytes))
 }
 
-// handleNacosDelete 删除配置
+// NacosDelete 删除配置
+// POST /api/nacos/config/delete
 func (h *ServerHandler) NacosDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, e.New(code.MethodNotAllowed, "Method not allowed", nil))
+		return
+	}
+
 	var req struct {
 		DataId string `json:"dataId"`
 		Group  string `json:"group"`
 		Tenant string `json:"tenant"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
-
-	if err := h.configMgr.ProxyDelete(req.DataId, req.Group, req.Tenant); err != nil {
-		http.Error(w, err.Error(), 500)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 		return
 	}
-	w.Write([]byte(`{"status":"ok"}`))
+
+	if err := h.configMgr.ProxyDelete(req.DataId, req.Group, req.Tenant); err != nil {
+		response.Error(w, e.New(code.NacosError, fmt.Sprintf("删除配置失败: %v", err), err))
+		return
+	}
+
+	response.Success(w, nil)
 }

@@ -134,7 +134,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
-import axios from 'axios'
+import request from './utils/request'
 import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import { Moon, Sunny, Monitor, Box, Operation, Platform, Plus, Document, Coin  } from '@element-plus/icons-vue'
@@ -190,7 +190,7 @@ const headerTitle = computed(() => {
 
 const fetchSystems = async () => {
   try {
-    const res = await axios.get('/api/systems')
+    const res = await request.get('/api/systems')
     // 手动更新 store，避免等到下一次推送
     wsStore.systems = res.data || []
     
@@ -220,7 +220,7 @@ const openCreateDialog = () => {
 const createSystem = async () => {
   if(!newSys.name) return ElMessage.warning('请输入名称')
   try {
-    const res = await axios.post('/api/systems/create', newSys)
+    const res = await request.post('/api/systems/create', newSys)
     ElMessage.success('创建成功')
     createSysDialog.value = false
     newSys.name = ''
@@ -228,8 +228,8 @@ const createSystem = async () => {
     
     // 刷新列表并自动跳转到新系统
     await fetchSystems()
-    if(res.data && res.data.id) {
-      handleSystemSelect(res.data.id)
+    if(res.id) {
+      handleSystemSelect(res.id)
     }
   } catch(e) {
     ElMessage.error('创建失败')

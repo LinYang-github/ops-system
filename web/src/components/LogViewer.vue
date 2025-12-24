@@ -60,7 +60,7 @@
 
 <script setup>
 import { ref, watch, nextTick, computed, onUnmounted } from 'vue'
-import axios from 'axios'
+import request from '../utils/request'
 import { Search } from '@element-plus/icons-vue'
 
 const props = defineProps(['modelValue', 'instanceId', 'instanceName'])
@@ -118,8 +118,8 @@ const handleClose = () => {
 // 1. 获取文件列表
 const loadFiles = async () => {
   try {
-    const res = await axios.get(`/api/instance/logs/files?instance_id=${props.instanceId}`)
-    fileList.value = res.data.files || []
+    const res = await request.get(`/api/instance/logs/files?instance_id=${props.instanceId}`)
+    fileList.value = res.files || []
     if (fileList.value.length > 0) {
       currentFile.value = fileList.value[0]
       connectWs()

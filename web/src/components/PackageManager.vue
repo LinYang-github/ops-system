@@ -179,7 +179,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import axios from 'axios'
+import request from '../utils/request'
 import { ElMessage } from 'element-plus'
 import { UploadFilled, Search, Upload, Refresh, Download, Delete, Document } from '@element-plus/icons-vue'
 
@@ -210,8 +210,8 @@ const filteredPackages = computed(() => {
 const fetchPackages = async () => {
   loading.value = true
   try {
-    const res = await axios.get('/api/packages')
-    rawPackages.value = (res.data || []).sort((a, b) => b.last_upload - a.last_upload)
+    const res = await request.get('/api/packages')
+    rawPackages.value = (res || []).sort((a, b) => b.last_upload - a.last_upload)
   } catch (err) {
     ElMessage.error('获取列表失败')
   } finally {
@@ -232,11 +232,11 @@ const viewManifest = async (name, version) => {
   manifestDialog.value.content = ''
   
   try {
-    const res = await axios.get(`/api/packages/manifest`, {
+    const res = await request.get(`/api/packages/manifest`, {
       params: { name, version }
     })
     // 格式化 JSON
-    manifestDialog.value.content = JSON.stringify(res.data, null, 2)
+    manifestDialog.value.content = JSON.stringify(res, null, 2)
   } catch (err) {
     manifestDialog.value.content = '获取配置失败: ' + (err.response?.data || err.message)
   } finally {
@@ -264,7 +264,7 @@ const handleUploadError = (err) => {
 
 const handleDelete = async (name, version) => {
   try {
-    await axios.post('/api/packages/delete', { name, version })
+    await request.post('/api/packages/delete', { name, version })
     ElMessage.success('已删除')
     await fetchPackages()
     const currentPkg = rawPackages.value.find(p => p.name === name)

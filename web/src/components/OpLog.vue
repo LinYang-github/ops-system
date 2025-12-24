@@ -74,7 +74,7 @@
   
   <script setup>
   import { ref, reactive, onMounted } from 'vue'
-  import axios from 'axios'
+  import request from '../utils/request'
   import { Search, Refresh } from '@element-plus/icons-vue'
   
   const loading = ref(false)
@@ -90,9 +90,9 @@
   const fetchLogs = async () => {
     loading.value = true
     try {
-      const res = await axios.post('/api/logs', query)
-      logs.value = res.data.list || []
-      total.value = res.data.total || 0
+      const res = await request.post('/api/logs', query)
+      logs.value = res.list || []
+      total.value = res.total || 0
     } catch (e) {
       console.error(e)
     } finally {

@@ -141,7 +141,7 @@
   
   <script setup>
   import { ref, reactive, computed, onMounted } from 'vue'
-  import axios from 'axios'
+  import request from '../utils/request'
   import { ElMessage } from 'element-plus'
   import { Bell, Refresh, Delete, Setting, Plus, Close } from '@element-plus/icons-vue'
   
@@ -160,9 +160,9 @@
   const loadData = async () => {
     loading.value = true
     try {
-      const r1 = await axios.get('/api/alerts/rules')
+      const r1 = await request.get('/api/alerts/rules')
       rules.value = r1.data || []
-      const r2 = await axios.get('/api/alerts/events')
+      const r2 = await request.get('/api/alerts/events')
       activeAlerts.value = r2.data.active || []
       historyAlerts.value = r2.data.history || []
     } finally {
@@ -171,21 +171,21 @@
   }
   
   const addRule = async () => {
-    await axios.post('/api/alerts/rules/add', newRule)
+    await request.post('/api/alerts/rules/add', newRule)
     showAddRule.value = false
     loadData()
     ElMessage.success('规则已添加')
   }
   
   const deleteRule = async (id) => {
-    await axios.get(`/api/alerts/rules/delete?id=${id}`)
+    await request.get(`/api/alerts/rules/delete?id=${id}`)
     loadData()
   }
   
   // [新增] 删除单条事件
   const deleteEvent = async (id) => {
     try {
-      await axios.post('/api/alerts/events/delete', { id })
+      await request.post('/api/alerts/events/delete', { id })
       ElMessage.success('记录已删除')
       loadData()
     } catch (e) {
@@ -196,7 +196,7 @@
   // [新增] 清空所有事件
   const clearAllEvents = async () => {
     try {
-      await axios.post('/api/alerts/events/clear')
+      await request.post('/api/alerts/events/clear')
       ElMessage.success('所有告警记录已清空')
       loadData()
     } catch (e) {

@@ -274,7 +274,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
-import axios from 'axios'
+import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete, Refresh, ArrowDown, Setting, MoreFilled, More, Link, InfoFilled, VideoPlay, VideoPause, Loading, Document } from '@element-plus/icons-vue'
 import { wsStore } from '../store/wsStore'
@@ -369,8 +369,8 @@ const logDialog = reactive({ visible: false, instId: '', instName: '' })
 const refreshData = async () => {
   if (!props.targetSystemId) return
   try {
-    const res = await axios.get('/api/systems')
-    fullData.value = res.data || []
+    const res = await request.get('/api/systems')
+    fullData.value = res || []
     const found = fullData.value.find(s => s.id === props.targetSystemId)
     currentSystem.value = found || null
   } catch (e) {} finally { loading.value = false }
@@ -395,7 +395,7 @@ const handleBatchAction = async (action) => {
 
   batchLoading.value = true
   try {
-    await axios.post('/api/systems/action', {
+    await request.post('/api/systems/action', {
       system_id: currentSystem.value.id,
       action: action
     })
@@ -408,7 +408,7 @@ const handleBatchAction = async (action) => {
 const handleCommand = (cmd) => {
   if (cmd === 'delete') {
     ElMessageBox.confirm('确定删除系统?', '警告', { type: 'warning' }).then(async () => {
-        await axios.post('/api/systems/delete', { id: currentSystem.value.id })
+        await request.post('/api/systems/delete', { id: currentSystem.value.id })
         ElMessage.success('已删除')
         emit('refresh-systems')
     })
@@ -423,10 +423,10 @@ const handleInstanceCommand = (cmd, id) => {
 }
 
 // 模组 & 部署 & 纳管
-const openAddModuleDialog = async () => { addModDialog.visible = true; const res = await axios.get('/api/packages'); packages.value = res.data || [] }
+const openAddModuleDialog = async () => { addModDialog.visible = true; const res = await request.get('/api/packages'); packages.value = res || [] }
 const updateModVersions = () => { if(addModDialog.selectedPkg) addModDialog.versions = addModDialog.selectedPkg.versions; addModDialog.version = addModDialog.versions[0]; if(!addModDialog.moduleName) addModDialog.moduleName = addModDialog.selectedPkg.name }
-const addModule = async () => { await axios.post('/api/systems/module/add', { system_id: currentSystem.value.id, module_name: addModDialog.moduleName, package_name: addModDialog.selectedPkg.name, package_version: addModDialog.version }); addModDialog.visible = false; refreshData() }
-const deleteModule = async (id) => { await axios.post('/api/systems/module/delete', { id }); refreshData() }
+const addModule = async () => { await request.post('/api/systems/module/add', { system_id: currentSystem.value.id, module_name: addModDialog.moduleName, package_name: addModDialog.selectedPkg.name, package_version: addModDialog.version }); addModDialog.visible = false; refreshData() }
+const deleteModule = async (id) => { await request.post('/api/systems/module/delete', { id }); refreshData() }
 
 // 部署
 const openDeployDialog = async (mod) => { 
@@ -438,7 +438,7 @@ const deployInstance = async () => {
   if(!deployDialog.nodeIP) return ElMessage.warning('请选择节点')
   deployDialog.loading = true; 
   try { 
-    await axios.post('/api/deploy', { 
+    await request.post('/api/deploy', { 
       system_id: currentSystem.value.id, 
       node_ip: deployDialog.nodeIP, 
       service_name: deployDialog.targetModule.package_name, 
@@ -464,7 +464,7 @@ const registerExternal = async () => {
   if(!adoptForm.name || !adoptForm.nodeIP || !adoptForm.startCmd) return ElMessage.warning('请补全信息')
   adoptDialog.loading = true
   try {
-    await axios.post('/api/deploy/external', { // 确保后端有此接口路由
+    await request.post('/api/deploy/external', { // 确保后端有此接口路由
       system_id: currentSystem.value.id,
       node_ip: adoptForm.nodeIP,
       config: {
@@ -486,7 +486,7 @@ const registerExternal = async () => {
 // 启停销毁
 const handleAction = async (id, action) => { 
   try {
-    await axios.post('/api/instance/action', { instance_id: id, action }); 
+    await request.post('/api/instance/action', { instance_id: id, action }); 
     ElMessage.success('指令已发送')
     if(action==='destroy') setTimeout(refreshData, 500) 
   } catch(e) {

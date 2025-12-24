@@ -128,7 +128,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/deploy", h.DeployInstance)
 	mux.HandleFunc("/api/deploy/external", h.RegisterExternal) // 纳管
 	mux.HandleFunc("/api/instance/action", h.InstanceAction)
-	mux.HandleFunc("/api/instance/status_report", h.WorkerInstanceStatusReport)
+	mux.HandleFunc("/api/instance/status_report", h.WorkerStatusReport)
 	mux.HandleFunc("/api/systems/action", h.SystemAction) // 批量操作
 
 	// --- Package 相关 (package_handler.go) ---
