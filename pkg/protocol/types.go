@@ -234,3 +234,30 @@ type LogFilesResp struct {
 	InstanceID string   `json:"instance_id"`
 	Files      []string `json:"files"` // e.g. ["Console Log", "Access Log"]
 }
+
+// AlertRule 告警规则配置
+type AlertRule struct {
+	ID         int64   `json:"id"`
+	Name       string  `json:"name"`        // 规则名称
+	TargetType string  `json:"target_type"` // "node", "instance"
+	Metric     string  `json:"metric"`      // "cpu", "mem", "status"(offline/stopped)
+	Condition  string  `json:"condition"`   // ">", "<", "="
+	Threshold  float64 `json:"threshold"`   // 阈值
+	Duration   int     `json:"duration"`    // 持续时间(秒)，防抖动
+	Enabled    bool    `json:"enabled"`
+}
+
+// AlertEvent 告警历史/活跃事件
+type AlertEvent struct {
+	ID         int64   `json:"id"`
+	RuleID     int64   `json:"rule_id"`
+	RuleName   string  `json:"rule_name"`
+	TargetType string  `json:"target_type"`
+	TargetID   string  `json:"target_id"`   // NodeIP 或 InstanceID
+	TargetName string  `json:"target_name"` //用于展示
+	MetricVal  float64 `json:"metric_val"`  // 触发时的值
+	Message    string  `json:"message"`
+	Status     string  `json:"status"` // "firing", "resolved"
+	StartTime  int64   `json:"start_time"`
+	EndTime    int64   `json:"end_time"` // resolved 时更新
+}

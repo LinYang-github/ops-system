@@ -58,6 +58,33 @@ func initTables(db *sql.DB) {
 			value TEXT,
 			updated_at INTEGER
 		);`,
+
+		// 告警规则表
+		`CREATE TABLE IF NOT EXISTS sys_alert_rules (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT,
+			target_type TEXT,
+			metric TEXT,
+			condition TEXT,
+			threshold REAL,
+			duration INTEGER,
+			enabled BOOLEAN
+		);`,
+
+		// 告警事件表 (记录历史)
+		`CREATE TABLE IF NOT EXISTS sys_alert_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			rule_id INTEGER,
+			rule_name TEXT,
+			target_type TEXT,
+			target_id TEXT,
+			target_name TEXT,
+			metric_val REAL,
+			message TEXT,
+			status TEXT,
+			start_time INTEGER,
+			end_time INTEGER
+		);`,
 	}
 
 	for _, sqlStmt := range sqls {

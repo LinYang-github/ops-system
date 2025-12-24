@@ -69,6 +69,9 @@
               <el-icon><Coin /></el-icon> <!-- 或者 use <Files /> -->
               <span>数据备份</span>
             </el-menu-item>
+            <el-menu-item index="alerts" @click="handleMenuSelect('alerts')">
+              <el-icon><Bell /></el-icon><span>告警中心</span>
+            </el-menu-item>
           </el-menu>
         </el-aside>
 
@@ -79,6 +82,14 @@
               <span class="breadcrumb">{{ headerTitle }}</span>
             </div>
             <div class="header-right">
+              <!-- [新增] 告警铃铛 -->
+              <div class="header-action-item" @click="handleMenuSelect('alerts')" title="查看告警">
+                <el-badge :value="wsStore.activeAlertCount" :max="99" :hidden="wsStore.activeAlertCount === 0" class="alert-badge">
+                  <el-icon :size="20"><Bell /></el-icon>
+                </el-badge>
+              </div>
+              
+              <el-divider direction="vertical" />
               <el-switch
                 v-model="isDark"
                 inline-prompt
@@ -123,7 +134,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
-import axios from 'axios'
+import request from './utils/request'
 import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import { Moon, Sunny, Monitor, Box, Operation, Platform, Plus, Document, Coin  } from '@element-plus/icons-vue'
@@ -136,6 +147,7 @@ import SystemManager from './components/SystemManager.vue'
 import OpLog from './components/OpLog.vue' 
 import ConfigCenter from './components/ConfigCenter.vue'
 import BackupManager from './components/BackupManager.vue'
+import AlertCenter from './components/AlertCenter.vue'
 
 // 状态
 const isDark = ref(false)
@@ -151,6 +163,7 @@ const newSys = reactive({ name: '', description: '' })
 
 // 计算当前组件
 const currentComponent = computed(() => {
+  if (activeMenu.value === 'alerts') return AlertCenter
   if (activeMenu.value === 'backups') return BackupManager
   if (activeMenu.value === 'config') return ConfigCenter
   if (activeMenu.value === 'logs') return OpLog
@@ -161,6 +174,7 @@ const currentComponent = computed(() => {
 
 // 计算标题
 const headerTitle = computed(() => {
+  if (activeMenu.value === 'alerts') return '告警中心'
   if (activeMenu.value === 'backups') return '数据灾备中心'
   if (activeMenu.value === 'logs') return '操作日志审计'
   if (activeMenu.value === 'packages') return '服务包发布中心'
@@ -176,7 +190,7 @@ const headerTitle = computed(() => {
 
 const fetchSystems = async () => {
   try {
-    const res = await axios.get('/api/systems')
+    const res = await request.get('/api/systems')
     // 手动更新 store，避免等到下一次推送
     wsStore.systems = res.data || []
     
@@ -206,7 +220,7 @@ const openCreateDialog = () => {
 const createSystem = async () => {
   if(!newSys.name) return ElMessage.warning('请输入名称')
   try {
-    const res = await axios.post('/api/systems/create', newSys)
+    const res = await request.post('/api/systems/create', newSys)
     ElMessage.success('创建成功')
     createSysDialog.value = false
     newSys.name = ''
@@ -214,8 +228,8 @@ const createSystem = async () => {
     
     // 刷新列表并自动跳转到新系统
     await fetchSystems()
-    if(res.data && res.data.id) {
-      handleSystemSelect(res.data.id)
+    if(res.id) {
+      handleSystemSelect(res.id)
     }
   } catch(e) {
     ElMessage.error('创建失败')
@@ -258,6 +272,25 @@ onMounted(() => {
 }
 .breadcrumb { font-size: 16px; font-weight: 600; color: var(--el-text-color-primary); }
 .layout-main { background-color: var(--el-fill-color-light); padding: 20px; overflow-x: hidden; }
+
+/* Header Right Actions */
+.header-right { display: flex; align-items: center; gap: 15px; }
+
+.header-action-item {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  color: var(--el-text-color-regular);
+  transition: color 0.3s;
+}
+.header-action-item:hover {
+  color: var(--el-color-primary);
+}
+/* 调整 Badge 位置 */
+.alert-badge :deep(.el-badge__content) {
+  top: 0px;
+  right: 0px;
+}
 
 /* 动画 */
 .fade-transform-enter-active, .fade-transform-leave-active { transition: all 0.3s; }

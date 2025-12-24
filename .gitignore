@@ -8,3 +8,8 @@
 /uploads
 /worker
 ops_data.db
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride

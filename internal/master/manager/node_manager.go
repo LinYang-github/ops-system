@@ -19,16 +19,18 @@ type nodeMetrics struct {
 }
 
 type NodeManager struct {
-	db           *sql.DB
-	mu           sync.Mutex
-	metricsCache sync.Map            // key: IP, value: nodeMetrics
-	tsdb         *monitor.MemoryTSDB // 新增：时序存储
+	db               *sql.DB
+	mu               sync.Mutex
+	metricsCache     sync.Map            // key: IP, value: nodeMetrics
+	tsdb             *monitor.MemoryTSDB // 新增：时序存储
+	offlineThreshold time.Duration
 }
 
-func NewNodeManager(db *sql.DB, tsdb *monitor.MemoryTSDB) *NodeManager {
+func NewNodeManager(db *sql.DB, tsdb *monitor.MemoryTSDB, threshold time.Duration) *NodeManager {
 	return &NodeManager{
-		db:   db,
-		tsdb: tsdb, // 注入
+		db:               db,
+		tsdb:             tsdb, // 注入
+		offlineThreshold: threshold,
 	}
 }
 
@@ -186,7 +188,7 @@ func (nm *NodeManager) GetAllNodes() []protocol.NodeInfo {
 		}
 
 		// 动态离线判定
-		if n.Status == "online" && (now-n.LastHeartbeat > 30) {
+		if n.Status == "online" && (now-n.LastHeartbeat > int64(nm.offlineThreshold.Seconds())) {
 			n.Status = "offline"
 			// 离线节点清除监控数据
 			n.CPUUsage = 0
@@ -207,4 +209,16 @@ func (nm *NodeManager) GetNode(ip string) (*protocol.NodeInfo, bool) {
 		return nil, false
 	}
 	return &n, true
+}
+
+// GetAllNodesMetrics 获取所有节点的监控快照 (供 AlertManager 使用)
+func (nm *NodeManager) GetAllNodesMetrics() map[string]protocol.NodeInfo {
+	// 复用 GetAllNodes 的逻辑，或者简化只读内存
+	// 这里为了简单，直接调用 GetAllNodes
+	nodes := nm.GetAllNodes()
+	res := make(map[string]protocol.NodeInfo)
+	for _, n := range nodes {
+		res[n.IP] = n
+	}
+	return res
 }

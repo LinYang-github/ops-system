@@ -102,7 +102,7 @@
   
   <script setup>
   import { ref, reactive, onMounted } from 'vue'
-  import axios from 'axios'
+  import request from '../utils/request'
   import { ElMessage } from 'element-plus'
   import { Setting, Search, Plus, Refresh } from '@element-plus/icons-vue'
   
@@ -125,10 +125,10 @@
   // 1. 初始化检查连接
   const checkConnection = async () => {
     try {
-      const res = await axios.get('/api/nacos/settings')
-      if(res.data && res.data.url) {
-        settings.url = res.data.url
-        settings.username = res.data.username
+      const res = await request.get('/api/nacos/settings')
+      if(res.url) {
+        settings.url = res.url
+        settings.username = res.username
         // 尝试获取命名空间来验证连接是否通
         await fetchNamespaces()
         connected.value = true
@@ -141,7 +141,7 @@
   
   const saveSettings = async () => {
     try {
-      await axios.post('/api/nacos/settings', settings)
+      await request.post('/api/nacos/settings', settings)
       ElMessage.success('保存成功')
       showSettings.value = false
       checkConnection()
@@ -149,10 +149,10 @@
   }
   
   const fetchNamespaces = async () => {
-    const res = await axios.get('/api/nacos/namespaces')
+    const res = await request.get('/api/nacos/namespaces')
     // Nacos API 返回结构 { code: 200, data: [...] }
-    if(res.data && res.data.data) {
-      namespaces.value = res.data.data
+    if(res.data) {
+      namespaces.value = res.data
       if(!currNs.value && namespaces.value.length > 0) {
           // 默认选中第一个
           currNs.value = namespaces.value[0].namespace
@@ -163,7 +163,7 @@
   const fetchConfigs = async () => {
     loading.value = true
     try {
-      const res = await axios.get('/api/nacos/configs', {
+      const res = await request.get('/api/nacos/configs', {
           params: {
               tenant: currNs.value,
               group: currGroup.value,
@@ -173,9 +173,9 @@
           }
       })
       // 解析 Page 结构
-      if (res.data && res.data.pageItems) {
-          configList.value = res.data.pageItems
-          total.value = res.data.totalCount
+      if (res.pageItems) {
+          configList.value = res.pageItems
+          total.value = res.totalCount
       } else {
           configList.value = []
       }
@@ -191,10 +191,10 @@
       editForm.group = row.group
       editForm.type = row.type
       // 获取详情
-      const res = await axios.get('/api/nacos/config/detail', {
+      const res = await request.get('/api/nacos/config/detail', {
           params: { tenant: currNs.value, dataId: row.dataId, group: row.group }
       })
-      editForm.content = typeof res.data === 'object' ? JSON.stringify(res.data) : res.data
+      editForm.content = typeof res === 'object' ? JSON.stringify(res) : res
     } else {
       editDialog.isNew = true
       editForm.dataId = ''
@@ -205,7 +205,7 @@
   
   const publishConfig = async () => {
     try {
-      await axios.post('/api/nacos/config/publish', {
+      await request.post('/api/nacos/config/publish', {
           tenant: currNs.value,
           ...editForm
       })
@@ -217,7 +217,7 @@
   
   const deleteConfig = async (row) => {
     try {
-      await axios.post('/api/nacos/config/delete', {
+      await request.post('/api/nacos/config/delete', {
           tenant: currNs.value,
           dataId: row.dataId,
           group: row.group

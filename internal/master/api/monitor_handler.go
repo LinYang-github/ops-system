@@ -1,17 +1,19 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
 	"ops-system/internal/master/monitor"
+	"ops-system/pkg/code"
+	"ops-system/pkg/e"
+	"ops-system/pkg/response"
 )
 
-// handleQueryRange 模拟 Prometheus 查询接口
+// QueryRange 模拟 Prometheus 查询接口
 // GET /api/monitor/query_range?query=node_cpu_usage&instance=1.2.3.4&start=...&end=...
-func handleQueryRange(w http.ResponseWriter, r *http.Request) {
+func (h *ServerHandler) QueryRange(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	metric := q.Get("query")   // e.g. node_cpu_usage
 	ip := q.Get("instance")    // e.g. 192.168.1.10
@@ -19,7 +21,7 @@ func handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	endStr := q.Get("end")
 
 	if metric == "" || ip == "" {
-		http.Error(w, "missing query or instance", 400)
+		response.Error(w, e.New(code.ParamError, "缺少 query 或 instance 参数", nil))
 		return
 	}
 
@@ -35,12 +37,23 @@ func handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		end = e
 	}
 
-	// 1. 查询数据
-	points := monitorStore.QueryRange(metric, ip, start, end)
+	// 1. 查询数据 (使用注入的 monitorStore)
+	points := h.monitorStore.QueryRange(metric, ip, start, end)
 
 	// 2. 格式化为 Prometheus 结构
-	resp := monitor.FormatPrometheusResponse(metric, ip, points)
+	// 返回结构: { status: "success", data: { resultType: "matrix", result: [...] } }
+	promResp := monitor.FormatPrometheusResponse(metric, ip, points)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	// 3. 统一响应
+	// 最终前端收到的 JSON: { code: 0, msg: "success", data: { status: "success", data: ... } }
+	// 前端 request.js 拦截器解包后，组件拿到的就是 promResp
+	response.Success(w, promResp)
+}
+
+// 这是一个预留的 Handler，如果以后需要暴露 metrics 给真正的 Prometheus Server 抓取
+// GET /metrics
+func (h *ServerHandler) Metrics(w http.ResponseWriter, r *http.Request) {
+	// 这里通常使用 prometheus/client_golang 的 promhttp.Handler()
+	// 目前不需要实现，仅作架构占位说明
+	w.WriteHeader(http.StatusNotImplemented)
 }

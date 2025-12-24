@@ -158,3 +158,18 @@ func (im *InstanceManager) CleanCacheForSystem(systemID string) {
 		im.metricsCache.Delete(id)
 	}
 }
+
+// GetAllInstancesMetrics 获取所有实例的监控快照
+func (im *InstanceManager) GetAllInstancesMetrics() map[string]protocol.InstanceInfo {
+	// 复用 GetAllInstances 逻辑
+	instMap := im.GetAllInstances() // 返回的是 map[sysID][]*Info
+
+	res := make(map[string]protocol.InstanceInfo)
+	for _, list := range instMap {
+		for _, inst := range list {
+			// 如果是指针，取值
+			res[inst.ID] = *inst
+		}
+	}
+	return res
+}

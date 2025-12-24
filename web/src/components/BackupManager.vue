@@ -105,7 +105,7 @@
   
   <script setup>
   import { ref, reactive, onMounted } from 'vue'
-  import axios from 'axios'
+  import request from '../utils/request'
   import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
   import { Plus, Refresh, Files, RefreshLeft, Delete } from '@element-plus/icons-vue'
   
@@ -123,8 +123,8 @@
   const fetchBackups = async () => {
     loading.value = true
     try {
-      const res = await axios.get('/api/backups')
-      backups.value = res.data || []
+      const res = await request.get('/api/backups')
+      backups.value = res || []
     } catch (e) {
       ElMessage.error('获取列表失败')
     } finally {
@@ -140,7 +140,7 @@
   const createBackup = async () => {
     createDialog.loading = true
     try {
-      await axios.post('/api/backups/create', { with_files: createDialog.withFiles })
+      await request.post('/api/backups/create', { with_files: createDialog.withFiles })
       ElMessage.success('备份创建成功')
       createDialog.visible = false
       fetchBackups()
@@ -153,7 +153,7 @@
   
   const handleDelete = async (row) => {
     try {
-      await axios.post('/api/backups/delete', { filename: row.name })
+      await request.post('/api/backups/delete', { filename: row.name })
       ElMessage.success('已删除')
       fetchBackups()
     } catch (e) {
@@ -180,7 +180,7 @@
       })
   
       try {
-        await axios.post('/api/backups/restore', { filename: row.name })
+        await request.post('/api/backups/restore', { filename: row.name })
         // 注意：后端恢复成功后会直接 Exit，前端可能收不到完整的 200 响应或者收到 Network Error
         // 无论如何，这里都提示成功
       } catch (e) {

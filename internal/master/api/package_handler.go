@@ -5,19 +5,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"ops-system/pkg/code"
+	"ops-system/pkg/e"
+	"ops-system/pkg/response"
 )
 
-// handleUploadPackage 处理上传 (Stream 模式，支持大文件)
-func handleUploadPackage(w http.ResponseWriter, r *http.Request) {
+// UploadPackage 处理上传 (Stream 模式，支持大文件)
+// POST /api/upload
+func (h *ServerHandler) UploadPackage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", 405)
+		response.Error(w, e.New(code.MethodNotAllowed, "Method not allowed", nil))
 		return
 	}
 
 	// 1. 获取 Multipart Reader (不预加载到内存)
 	reader, err := r.MultipartReader()
 	if err != nil {
-		http.Error(w, "Invalid multipart request", 400)
+		response.Error(w, e.New(code.PackageUploadFailed, "无法解析上传请求", err))
 		return
 	}
 
@@ -28,88 +33,87 @@ func handleUploadPackage(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			http.Error(w, "Read upload stream failed", 500)
+			response.Error(w, e.New(code.PackageUploadFailed, "读取上传流中断", err))
 			return
 		}
 
 		// 找到名为 "file" 的表单项
 		if part.FormName() == "file" {
 			// 3. 将流直接传给 Manager
-			manifest, err := pkgManager.SavePackageStream(part, part.FileName())
+			manifest, err := h.pkgMgr.SavePackageStream(part, part.FileName())
 			if err != nil {
-				http.Error(w, fmt.Sprintf("Process failed: %v", err), 400)
+				// 这里根据错误内容可以细分，暂统一为 UploadFailed
+				response.Error(w, e.New(code.PackageUploadFailed, fmt.Sprintf("处理服务包失败: %v", err), err))
 				return
 			}
 
-			// 成功，返回 JSON
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"msg":     "Upload success",
+			// 4. 成功响应
+			// 返回 manifest 信息方便前端展示
+			response.Success(w, map[string]interface{}{
 				"service": manifest.Name,
 				"version": manifest.Version,
+				"os":      manifest.OS,
 			})
 			return
 		}
 	}
 
-	http.Error(w, "No file part found", 400)
+	// 如果循环结束还没找到 file 字段
+	response.Error(w, e.New(code.ParamError, "未找到 file 表单字段", nil))
 }
 
-// handleListPackages 获取包列表
-func handleListPackages(w http.ResponseWriter, r *http.Request) {
+// ListPackages 获取包列表
+func (h *ServerHandler) ListPackages(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
-	list, err := pkgManager.ListPackages()
+	list, err := h.pkgMgr.ListPackages()
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		response.Error(w, e.New(code.ServerError, "获取列表失败", err))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	response.Success(w, list)
 }
 
-// handleDeletePackage 删除包
-func handleDeletePackage(w http.ResponseWriter, r *http.Request) {
+// DeletePackage 删除包
+func (h *ServerHandler) DeletePackage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", 405)
+		response.Error(w, e.New(code.MethodNotAllowed, "Method not allowed", nil))
 		return
 	}
+
 	type DeleteReq struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 	}
 	var req DeleteReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", 400)
+		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 		return
 	}
-	if err := pkgManager.DeletePackage(req.Name, req.Version); err != nil {
-		http.Error(w, fmt.Sprintf("Delete failed: %v", err), 500)
+
+	if err := h.pkgMgr.DeletePackage(req.Name, req.Version); err != nil {
+		response.Error(w, e.New(code.PackageDeleteFailed, "删除文件失败", err))
 		return
 	}
-	w.Write([]byte(`{"status":"ok"}`))
+
+	response.Success(w, nil)
 }
 
-// handleGetPackageManifest 获取包配置详情 (修复报错的核心函数)
-// URL: /api/packages/manifest?name=...&version=...
-func handleGetPackageManifest(w http.ResponseWriter, r *http.Request) {
-	// 1. 获取参数
+// GetPackageManifest 获取包配置详情
+func (h *ServerHandler) GetPackageManifest(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	name := query.Get("name")
 	version := query.Get("version")
 
 	if name == "" || version == "" {
-		http.Error(w, "missing name or version", 400)
+		response.Error(w, e.New(code.ParamError, "缺少 name 或 version 参数", nil))
 		return
 	}
 
-	// 2. 调用 Manager 读取
-	manifest, err := pkgManager.GetManifest(name, version)
+	manifest, err := h.pkgMgr.GetManifest(name, version)
 	if err != nil {
-		http.Error(w, err.Error(), 404)
+		response.Error(w, e.New(code.PackageNotFound, "读取配置失败", err))
 		return
 	}
 
-	// 3. 返回 JSON
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(manifest)
+	response.Success(w, manifest)
 }
