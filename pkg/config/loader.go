@@ -9,7 +9,6 @@ import (
 )
 
 // LoadMasterConfig 加载 Master 配置
-// 【关键修改】：不再创建新实例，而是使用全局实例，以便继承 main.go 中的 BindPFlag
 func LoadMasterConfig(cfgFile string) (*MasterConfig, error) {
 	// 1. 获取全局 Viper 实例 (这就包含了 main.go 里绑定的命令行参数)
 	v := viper.GetViper()
@@ -30,6 +29,7 @@ func LoadMasterConfig(cfgFile string) (*MasterConfig, error) {
 	v.SetDefault("logic.node_offline_threshold", "30s")
 	v.SetDefault("logic.batch_concurrency", 50)
 	v.SetDefault("logic.http_client_timeout", "5s")
+	v.SetDefault("auth.secret_key", "ops-system-secret-key")
 
 	// 3. 绑定环境变量
 	v.SetEnvPrefix("OPS_MASTER")
@@ -73,6 +73,7 @@ func LoadWorkerConfig(cfgFile string) (*WorkerConfig, error) {
 	v.SetDefault("logic.heartbeat_interval", "5s")
 	v.SetDefault("logic.monitor_interval", "3s")
 	v.SetDefault("logic.http_client_timeout", "10s")
+	v.SetDefault("auth.secret_key", "ops-system-secret-key")
 
 	v.SetEnvPrefix("OPS_WORKER")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

@@ -64,7 +64,7 @@ func main() {
 		}
 	}
 	// 初始化全局 HTTP Client
-	pkgUtils.InitHTTPClient(cfg.Logic.HTTPClientTimeout)
+	pkgUtils.InitHTTPClient(cfg.Logic.HTTPClientTimeout, cfg.Auth.SecretKey)
 
 	// 5. 初始化各模块
 	executor.Init(absWorkDir)

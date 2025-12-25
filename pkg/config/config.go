@@ -11,6 +11,7 @@ type MasterConfig struct {
 	Storage StorageConfig `mapstructure:"storage"`
 	Logic   LogicConfig   `mapstructure:"logic"`
 	Log     LogConfig     `mapstructure:"log"`
+	Auth    AuthConfig    `mapstructure:"auth"`
 }
 
 type ServerConfig struct {
@@ -47,6 +48,7 @@ type WorkerConfig struct {
 	Connect ConnectConfig      `mapstructure:"connect"`
 	Logic   WorkerLogicConfig  `mapstructure:"logic"`
 	Log     LogConfig          `mapstructure:"log"`
+	Auth    AuthConfig         `mapstructure:"auth"`
 }
 
 type WorkerServerConfig struct {
@@ -68,4 +70,8 @@ type WorkerLogicConfig struct {
 
 type LogConfig struct {
 	Level string `mapstructure:"level"` // "debug", "info", "error"
+}
+
+type AuthConfig struct {
+	SecretKey string `mapstructure:"secret_key"`
 }

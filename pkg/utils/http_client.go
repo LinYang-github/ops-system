@@ -9,8 +9,13 @@ import (
 	"time"
 )
 
-func InitHTTPClient(timeout time.Duration) {
+// 全局 Token 变量
+var globalAuthToken string
+
+// InitHTTPClient 初始化 Client 配置
+func InitHTTPClient(timeout time.Duration, token string) {
 	GlobalClient.Timeout = timeout
+	globalAuthToken = token // 保存 Token
 }
 
 // GlobalClient 全局单例 HTTP Client，配置长连接池
@@ -30,16 +35,24 @@ var GlobalClient = &http.Client{
 	},
 }
 
-// PostJSON 发送 JSON 请求并自动处理连接复用
-// 如果状态码不是 200，会返回错误
+// PostJSON 发送 JSON 请求 (自动注入 Auth Header)
 func PostJSON(url string, data []byte) error {
-	resp, err := GlobalClient.Post(url, "application/json", bytes.NewBuffer(data))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// 【新增】注入 Token
+	if globalAuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+globalAuthToken)
+	}
+
+	resp, err := GlobalClient.Do(req) // 改用 Do 发送自定义 Request
 	if err != nil {
 		return err
 	}
 
-	// 【关键】必须读取并关闭 Body，连接才能归还到池中
-	// 如果需要读取 Worker 返回的具体错误信息，可以在这里读取
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
@@ -48,4 +61,28 @@ func PostJSON(url string, data []byte) error {
 	}
 
 	return nil
+}
+
+// 建议增加一个 Get 方法供 Master 查询 Worker 日志列表使用
+func Get(url string) ([]byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if globalAuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+globalAuthToken)
+	}
+
+	resp, err := GlobalClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http status %d: %s", resp.StatusCode, string(body))
+	}
+	return body, nil
 }

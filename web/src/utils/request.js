@@ -18,6 +18,8 @@ service.interceptors.request.use(
     // if (token) {
     //   config.headers['Authorization'] = 'Bearer ' + token
     // }
+    const token = "ops-system-secret-key" 
+    config.headers['Authorization'] = 'Bearer ' + token
     return config
   },
   error => {

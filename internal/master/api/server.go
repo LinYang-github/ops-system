@@ -8,10 +8,13 @@ import (
 
 	"ops-system/internal/master/db"
 	"ops-system/internal/master/manager"
+	"ops-system/internal/master/middleware"
 	"ops-system/internal/master/monitor"
 	"ops-system/internal/master/ws"
+
 	"ops-system/pkg/config"
 	"ops-system/pkg/storage"
+	"ops-system/pkg/utils"
 )
 
 // 定义配置结构体
@@ -59,6 +62,8 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		return fmt.Errorf("init storage failed: %v", err)
 	}
 
+	utils.InitHTTPClient(cfg.Logic.HTTPClientTimeout, cfg.Auth.SecretKey)
+
 	// 4. 初始化所有 Manager (依赖注入)
 	// 注意顺序：底层依赖先初始化
 	logMgr := manager.NewLogManager(database)
@@ -95,10 +100,12 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 
 	log.Printf("Master UI & API running on %s", cfg.Server.Port)
 
+	authHandler := middleware.AuthMiddleware(cfg.Auth.SecretKey)(mux)
+
 	server := &http.Server{
 		Addr:         cfg.Server.Port,
-		Handler:      mux,
-		ReadTimeout:  0, // 支持大文件上传
+		Handler:      authHandler, // 使用包装后的 Handler
+		ReadTimeout:  0,
 		WriteTimeout: 0,
 	}
 
