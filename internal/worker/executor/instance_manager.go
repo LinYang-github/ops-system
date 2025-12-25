@@ -51,14 +51,16 @@ type StartProcessResult struct {
 	Error  error
 }
 
-// InstanceDirInfo 辅助结构
 type InstanceDirInfo struct {
 	InstanceID string
 	WorkDir    string
 }
 
-// scanInstancesInDir 扫描逻辑
-func scanInstancesInDir(parentDir string) []InstanceDirInfo {
+// -------------------------------------------------------
+// 扫描与目录查找逻辑
+// -------------------------------------------------------
+
+func scanDir(parentDir string) []InstanceDirInfo {
 	var list []InstanceDirInfo
 	sysEntries, err := os.ReadDir(parentDir)
 	if err != nil {
@@ -69,11 +71,11 @@ func scanInstancesInDir(parentDir string) []InstanceDirInfo {
 		if !sys.IsDir() {
 			continue
 		}
-		sys_name := sys.Name()
-		if sys_name == "pkg_cache" || sys_name == "external" {
+		sysName := sys.Name()
+		if sysName == "pkg_cache" || sysName == "external" {
 			continue
 		}
-		sysPath := filepath.Join(parentDir, sys.Name())
+		sysPath := filepath.Join(parentDir, sysName)
 
 		instEntries, err := os.ReadDir(sysPath)
 		if err != nil {
@@ -84,44 +86,83 @@ func scanInstancesInDir(parentDir string) []InstanceDirInfo {
 			if !inst.IsDir() {
 				continue
 			}
-			name := inst.Name()
-			lastUnderscore := -1
-			for i := len(name) - 1; i >= 0; i-- {
-				if name[i] == '_' {
-					lastUnderscore = i
-					break
-				}
+			instName := inst.Name()
+			instID := instName
+			lastIdx := strings.LastIndex(instName, "_")
+			if lastIdx != -1 && lastIdx < len(instName)-1 {
+				instID = instName[lastIdx+1:]
 			}
-			if lastUnderscore > 0 && lastUnderscore < len(name)-1 {
-				instID := name[lastUnderscore+1:]
-				list = append(list, InstanceDirInfo{
-					InstanceID: instID,
-					WorkDir:    filepath.Join(sysPath, name),
-				})
-			}
+
+			list = append(list, InstanceDirInfo{
+				InstanceID: instID,
+				WorkDir:    filepath.Join(sysPath, instName),
+			})
 		}
 	}
 	return list
 }
 
-func scanDir(parentDir string) []InstanceDirInfo {
-	// 复用 scanInstancesInDir 的逻辑即可，或者保留之前的 scanDir
-	return scanInstancesInDir(parentDir)
-}
-
-// GetAllLocalInstances 扫描本地所有实例
 func GetAllLocalInstances() []InstanceDirInfo {
 	var list []InstanceDirInfo
 	if baseWorkDir == "" {
 		return list
 	}
-	list = append(list, scanInstancesInDir(baseWorkDir)...)
+	list = append(list, scanDir(baseWorkDir)...)
 	extDir := filepath.Join(baseWorkDir, "external")
-	list = append(list, scanInstancesInDir(extDir)...)
+	list = append(list, scanDir(extDir)...)
 	return list
 }
 
-// DeployInstance 部署实例
+func FindInstanceDir(instID string) (string, bool) {
+	if baseWorkDir == "" {
+		return "", false
+	}
+	searchInRoot := func(rootDir string) (string, bool) {
+		systems, err := os.ReadDir(rootDir)
+		if err != nil {
+			return "", false
+		}
+		for _, sys := range systems {
+			if !sys.IsDir() {
+				continue
+			}
+			if sys.Name() == "pkg_cache" || sys.Name() == "external" {
+				continue
+			}
+			sysPath := filepath.Join(rootDir, sys.Name())
+			insts, err := os.ReadDir(sysPath)
+			if err != nil {
+				continue
+			}
+			for _, inst := range insts {
+				if !inst.IsDir() {
+					continue
+				}
+				name := inst.Name()
+				if name == instID {
+					return filepath.Join(sysPath, name), true
+				}
+				if strings.HasSuffix(name, "_"+instID) {
+					return filepath.Join(sysPath, name), true
+				}
+			}
+		}
+		return "", false
+	}
+	if path, found := searchInRoot(baseWorkDir); found {
+		return path, true
+	}
+	extDir := filepath.Join(baseWorkDir, "external")
+	if path, found := searchInRoot(extDir); found {
+		return path, true
+	}
+	return "", false
+}
+
+// -------------------------------------------------------
+// 部署逻辑
+// -------------------------------------------------------
+
 func DeployInstance(req protocol.DeployRequest) error {
 	if baseWorkDir == "" {
 		return fmt.Errorf("executor not initialized")
@@ -134,7 +175,6 @@ func DeployInstance(req protocol.DeployRequest) error {
 	workDir := filepath.Join(baseWorkDir, req.SystemName, dirName)
 
 	log.Printf("[Deploy] Extracting %s -> %s", filepath.Base(cachedZipPath), workDir)
-
 	os.RemoveAll(workDir)
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return err
@@ -187,7 +227,10 @@ func ensurePackageCached(name, version, url string) (string, error) {
 	return cachePath, nil
 }
 
-// HandleAction 处理动作
+// -------------------------------------------------------
+// 进程控制逻辑
+// -------------------------------------------------------
+
 func HandleAction(req protocol.InstanceActionRequest) error {
 	workDir, found := FindInstanceDir(req.InstanceID)
 	if !found {
@@ -210,13 +253,11 @@ func HandleAction(req protocol.InstanceActionRequest) error {
 	return nil
 }
 
-// StartProcess 启动
 func StartProcess(workDir string) StartProcessResult {
 	m, err := readManifest(workDir)
 	if err != nil {
 		return StartProcessResult{Status: "error", Error: err}
 	}
-
 	if isRunning(workDir) {
 		pid := getPID(workDir)
 		return StartProcessResult{Status: "running", PID: pid, Uptime: time.Now().Unix(), Error: nil}
@@ -226,7 +267,6 @@ func StartProcess(workDir string) StartProcessResult {
 	if m.IsExternal {
 		execDir = m.ExternalWorkDir
 	}
-
 	cmdPath := m.Entrypoint
 	if !filepath.IsAbs(cmdPath) {
 		cmdPath = filepath.Join(execDir, m.Entrypoint)
@@ -247,21 +287,23 @@ func StartProcess(workDir string) StartProcessResult {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
-	// ==========================================
-	// 【关键修改】设置进程属性，使其脱离父进程
-	// 具体实现由 process_windows.go 或 process_unix.go 提供
-	// ==========================================
-	setProcessAttributes(cmd)
+	// 【平台钩子】启动前准备 (Windows: CreationFlags, Unix: Setsid)
+	prepareProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return StartProcessResult{Status: "error", Error: fmt.Errorf("start failed: %v", err)}
 	}
 
-	var targetPID int
+	// 【平台钩子】启动后关联 (Windows: Job Object, Unix: No-op)
+	instID := filepath.Base(workDir)
+	if err := attachProcessToManager(instID, cmd.Process.Pid); err != nil {
+		log.Printf("[Warn] Attach to job failed: %v", err)
+	}
 
+	var targetPID int
 	if m.IsExternal && m.PidStrategy == "match" {
-		cmd.Wait() // 等待脚本退出
+		cmd.Wait()
 		for i := 0; i < 5; i++ {
 			time.Sleep(500 * time.Millisecond)
 			pid, err := findProcessPID(m.ProcessName, m.ExternalWorkDir)
@@ -271,11 +313,10 @@ func StartProcess(workDir string) StartProcessResult {
 			}
 		}
 		if targetPID == 0 {
-			return StartProcessResult{Status: "error", Error: fmt.Errorf("process match failed for: %s", m.ProcessName)}
+			return StartProcessResult{Status: "error", Error: fmt.Errorf("match failed for: %s", m.ProcessName)}
 		}
 	} else {
 		targetPID = cmd.Process.Pid
-		// 异步等待，防止僵尸进程，但不阻塞 Worker
 		go cmd.Wait()
 	}
 
@@ -283,10 +324,23 @@ func StartProcess(workDir string) StartProcessResult {
 	return StartProcessResult{Status: "running", PID: targetPID, Uptime: time.Now().Unix()}
 }
 
-// StopProcess 停止
+// StopProcess 停止进程 (核心修改)
 func StopProcess(workDir string) (status string, pid int, err error) {
 	m, err := readManifest(workDir)
-	if err == nil && m.StopEntrypoint != "" {
+	instID := filepath.Base(workDir)
+
+	// 1. 读取 PID (这是新逻辑的关键，跨平台都需要 PID)
+	pidPath := filepath.Join(workDir, "pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		// 没有 PID 文件，视为已停止
+		return "stopped", 0, nil
+	}
+	targetPID, _ := strconv.Atoi(string(data))
+
+	// 2. 自定义停止命令 (优先)
+	if m != nil && m.StopEntrypoint != "" {
+		// ... 自定义停止逻辑保持不变 ...
 		execDir := workDir
 		if m.IsExternal {
 			execDir = m.ExternalWorkDir
@@ -304,67 +358,23 @@ func StopProcess(workDir string) (status string, pid int, err error) {
 		}
 	}
 
-	pidPath := filepath.Join(workDir, "pid")
-	data, _ := os.ReadFile(pidPath)
-	targetPID, _ := strconv.Atoi(string(data))
-
+	// 3. 强制终止逻辑 (平台特定)
+	// 【关键修改】调用平台特定的杀进程树函数
 	if targetPID > 0 {
-		if proc, err := os.FindProcess(targetPID); err == nil {
-			proc.Kill()
+		if err := killProcessTree(targetPID, instID); err != nil {
+			log.Printf("[Stop] killProcessTree failed: %v", err)
+			// 如果进程树杀失败，尝试保底的单进程 Kill
+			if proc, err := os.FindProcess(targetPID); err == nil {
+				proc.Kill()
+			}
 		}
 	}
+
 	os.Remove(pidPath)
 	return "stopped", 0, nil
 }
 
-// FindInstanceDir 查找实例目录
-func FindInstanceDir(instID string) (string, bool) {
-	if baseWorkDir == "" {
-		return "", false
-	}
-	searchInRoot := func(rootDir string) (string, bool) {
-		systems, err := os.ReadDir(rootDir)
-		if err != nil {
-			return "", false
-		}
-		for _, sys := range systems {
-			if !sys.IsDir() {
-				continue
-			}
-			if sys.Name() == "pkg_cache" || sys.Name() == "external" {
-				continue
-			}
-			sysPath := filepath.Join(rootDir, sys.Name())
-			insts, err := os.ReadDir(sysPath)
-			if err != nil {
-				continue
-			}
-			for _, inst := range insts {
-				if !inst.IsDir() {
-					continue
-				}
-				name := inst.Name()
-				if name == instID {
-					return filepath.Join(sysPath, name), true
-				}
-				if strings.HasSuffix(name, "_"+instID) {
-					return filepath.Join(sysPath, name), true
-				}
-			}
-		}
-		return "", false
-	}
-	if path, found := searchInRoot(baseWorkDir); found {
-		return path, true
-	}
-	extDir := filepath.Join(baseWorkDir, "external")
-	if path, found := searchInRoot(extDir); found {
-		return path, true
-	}
-	return "", false
-}
-
-// 辅助函数
+// 辅助函数 (保持不变) ...
 func readManifest(workDir string) (*protocol.ServiceManifest, error) {
 	f, err := os.Open(filepath.Join(workDir, "service.json"))
 	if err != nil {
@@ -375,7 +385,6 @@ func readManifest(workDir string) (*protocol.ServiceManifest, error) {
 	json.NewDecoder(f).Decode(&m)
 	return &m, nil
 }
-
 func resolveExecutable(path string) (string, error) {
 	if runtime.GOOS == "windows" && filepath.Ext(path) == "" {
 		if _, err := os.Stat(path + ".exe"); err == nil {
@@ -389,7 +398,6 @@ func resolveExecutable(path string) (string, error) {
 	}
 	return path, nil
 }
-
 func buildEnv(custom map[string]string) []string {
 	env := os.Environ()
 	for k, v := range custom {
@@ -397,8 +405,8 @@ func buildEnv(custom map[string]string) []string {
 	}
 	return env
 }
-
 func isRunning(workDir string) bool {
+	// ... (代码同前，略)
 	pidPath := filepath.Join(workDir, "pid")
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
@@ -413,23 +421,18 @@ func isRunning(workDir string) bool {
 		return false
 	}
 	if runtime.GOOS != "windows" {
-		// Unix: signal 0
 		if err := proc.Signal(syscall.Signal(0)); err != nil {
 			return false
 		}
 	}
-	// Windows: FindProcess always succeeds, needs extra check or rely on pidfile
-	// Simple check:
 	_ = proc
 	return true
 }
-
 func getPID(workDir string) int {
 	data, _ := os.ReadFile(filepath.Join(workDir, "pid"))
 	pid, _ := strconv.Atoi(string(data))
 	return pid
 }
-
 func unzip(src, dest string) error {
 	r, err := zip.OpenReader(src)
 	if err != nil {
@@ -454,7 +457,6 @@ func unzip(src, dest string) error {
 	}
 	return nil
 }
-
 func findProcessPID(nameKeyword string, workDir string) (int, error) {
 	procs, err := process.Processes()
 	if err != nil {
@@ -464,8 +466,7 @@ func findProcessPID(nameKeyword string, workDir string) (int, error) {
 	for _, p := range procs {
 		n, _ := p.Name()
 		cmd, _ := p.Cmdline()
-		if strings.Contains(strings.ToLower(n), strings.ToLower(nameKeyword)) ||
-			strings.Contains(strings.ToLower(cmd), strings.ToLower(nameKeyword)) {
+		if strings.Contains(strings.ToLower(n), strings.ToLower(nameKeyword)) || strings.Contains(strings.ToLower(cmd), strings.ToLower(nameKeyword)) {
 			if cwd, err := p.Cwd(); err == nil && filepath.Clean(cwd) == workDir {
 				return int(p.Pid), nil
 			}
