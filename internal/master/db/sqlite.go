@@ -47,9 +47,7 @@ func initTables(db *sql.DB) {
 			mem_total INTEGER,
 			disk_total INTEGER,
 			status TEXT,
-			last_heartbeat INTEGER,
-			cpu_usage REAL,
-			mem_usage REAL
+			last_heartbeat INTEGER
 		);`,
 
 		// 通用配置表
