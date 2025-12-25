@@ -211,7 +211,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { wsStore } from '../store/wsStore'
-import { Search, Plus, Refresh, Monitor, Edit, ArrowDown, Terminal, RefreshLeft, Delete, InfoFilled, View } from '@element-plus/icons-vue'
+import { Search, Plus, Refresh, Monitor, Edit, ArrowDown, Platform, RefreshLeft, Delete, InfoFilled, View } from '@element-plus/icons-vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 
 // --- 状态定义 ---

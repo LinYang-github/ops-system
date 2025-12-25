@@ -89,6 +89,25 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		nodeMgr = manager.NewNodeManager(database, monitorStore, cfg.Logic.NodeOfflineThreshold)
 	}
 
+	// 启动日志自动清理任务 (每天执行一次)
+	go func() {
+		// 启动时先执行一次
+		currentCfg, _ := configMgr.GetGlobalConfig()
+		if currentCfg != nil {
+			logMgr.CleanupOldLogs(currentCfg.Log.RetentionDays)
+		}
+
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			// 每次执行时重新读取最新配置
+			cfg, err := configMgr.GetGlobalConfig()
+			if err == nil {
+				logMgr.CleanupOldLogs(cfg.Log.RetentionDays)
+			}
+		}
+	}()
+
 	// 5. 初始化全局 Handler 容器
 	// 将所有 Manager 注入到 Handler 中，彻底消除全局变量
 	serverHandler := NewServerHandler(

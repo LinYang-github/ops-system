@@ -87,6 +87,10 @@ type GlobalConfig struct {
 		HeartbeatInterval int `json:"heartbeat_interval"` // 秒
 		MonitorInterval   int `json:"monitor_interval"`   // 秒
 	} `json:"worker"`
+
+	Log struct {
+		RetentionDays int `json:"retention_days"` // 保留天数
+	} `json:"log"`
 }
 
 // DefaultGlobalConfig 获取默认配置
@@ -96,5 +100,6 @@ func DefaultGlobalConfig() GlobalConfig {
 	c.Logic.HTTPClientTimeout = 5
 	c.Worker.HeartbeatInterval = 5
 	c.Worker.MonitorInterval = 3
+	c.Log.RetentionDays = 180
 	return c
 }

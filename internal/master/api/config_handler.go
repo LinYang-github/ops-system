@@ -215,7 +215,12 @@ func (h *ServerHandler) UpdateGlobalConfig(w http.ResponseWriter, r *http.Reques
 	// 更新 Node Manager
 	h.nodeMgr.SetOfflineThreshold(time.Duration(cfg.Logic.NodeOfflineThreshold) * time.Second)
 
-	// 3. (可选) 记录审计日志
+	// 3.异步触发日志清理
+	go func() {
+		h.logMgr.CleanupOldLogs(cfg.Log.RetentionDays)
+	}()
+
+	// 4. (可选) 记录审计日志
 	h.logMgr.RecordLog(utils.GetClientIP(r), "update_config", "system", "global", "Updated system settings", "success")
 
 	response.Success(w, nil)

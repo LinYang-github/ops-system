@@ -63,6 +63,18 @@
               <div class="tip">采集 CPU、内存、IO 数据的频率。</div>
             </el-form-item>
 
+            <el-divider border-style="dashed" />
+
+            <!-- 维护区域 -->
+            <div class="section-title">系统维护</div>
+
+            <el-form-item label="操作日志保留天数">
+              <div class="input-wrapper">
+                <el-input-number v-model="form.log.retention_days" :min="1" :max="3650" />
+                <span class="unit">天</span>
+              </div>
+              <div class="tip">系统将自动每天清理一次超过此时限的操作审计日志。</div>
+            </el-form-item>
           </el-form>
         </div>
       </el-card>
@@ -82,7 +94,8 @@ const saving = ref(false)
 
 const form = reactive({
   logic: { node_offline_threshold: 30, http_client_timeout: 5 },
-  worker: { heartbeat_interval: 5, monitor_interval: 3 }
+  worker: { heartbeat_interval: 5, monitor_interval: 3 },
+  log: { retention_days: 180 }
 })
 
 const loadConfig = async () => {
@@ -92,6 +105,7 @@ const loadConfig = async () => {
     if (data) {
       if (data.logic) Object.assign(form.logic, data.logic)
       if (data.worker) Object.assign(form.worker, data.worker)
+      if (data.log) Object.assign(form.log, data.log)
     }
   } finally {
     loading.value = false
