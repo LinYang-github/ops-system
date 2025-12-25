@@ -6,10 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
+	// 这里引用的是 worker 本地的 utils (如果用到) 或 pkg/utils
+	// 注意：这里 reportStatus 用到的 PostJSON 其实应该来自 pkg/utils
+	// 为了避免混乱，我们在这里显式引入 pkg/utils
+	pkgUtils "ops-system/pkg/utils"
+
 	"ops-system/pkg/protocol"
-	"ops-system/pkg/utils" // 引入全局 HTTP Client
 
 	"github.com/shirou/gopsutil/v3/process"
 )
@@ -22,45 +27,56 @@ type ioStatCache struct {
 }
 
 var (
-	ioCache         = make(map[string]*ioStatCache) // key: InstanceID
-	cachedMasterURL string                          // 缓存 Master 地址，供 ReportStatus 使用
+	ioCache         = make(map[string]*ioStatCache)
+	cachedMasterURL string
+
+	// 【新增】用于动态更新监控频率
+	monitorTicker *time.Ticker
+	monitorMu     sync.Mutex
 )
 
 // StartMonitor 启动后台监控协程
-func StartMonitor(masterURL string) {
+func StartMonitor(masterURL string, interval time.Duration) {
 	cachedMasterURL = masterURL
-	go func() {
-		// 3秒采集一次
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
 
-		for range ticker.C {
+	// 初始化 Ticker
+	if interval <= 0 {
+		interval = 3 * time.Second
+	}
+	monitorTicker = time.NewTicker(interval)
+
+	go func() {
+		// 监听 Ticker
+		for range monitorTicker.C {
 			checkAndReport(masterURL)
 		}
 	}()
 }
 
-// ReportStatus 【导出方法】供 Handler 在异步任务（如部署）完成时手动调用
-// 此时不需要监控数据，只上报状态变更
+// 【新增】UpdateMonitorInterval 动态更新监控间隔 (修复报错的核心)
+func UpdateMonitorInterval(seconds int64) {
+	if seconds <= 0 || monitorTicker == nil {
+		return
+	}
+	// Reset 是线程安全的，直接重置下一次触发时间
+	monitorTicker.Reset(time.Duration(seconds) * time.Second)
+}
+
+// ReportStatus 供 Handler 在异步任务完成时调用
 func ReportStatus(instID, status string, pid int, uptime int64) {
 	if cachedMasterURL == "" {
 		return
 	}
-	// 填入 0 的监控数据
 	reportStatus(cachedMasterURL, instID, status, pid, uptime, 0, 0, 0, 0)
 }
 
-// checkAndReport 内部轮询逻辑
 func checkAndReport(masterURL string) {
-	// 1. 获取所有本地实例 (该函数在 instance_manager.go 中定义)
 	instances := GetAllLocalInstances()
 
 	for _, inst := range instances {
-		// 2. 读取 PID
 		pidPath := filepath.Join(inst.WorkDir, "pid")
 		data, err := os.ReadFile(pidPath)
 		if err != nil {
-			// 没有 PID 文件，说明是停止状态，清理缓存并跳过
 			delete(ioCache, inst.InstanceID)
 			continue
 		}
@@ -70,33 +86,23 @@ func checkAndReport(masterURL string) {
 			continue
 		}
 
-		// 3. 获取进程对象
 		proc, err := process.NewProcess(int32(pidInt))
 		if err != nil {
-			// 进程不存在 (僵尸 PID 文件)，视为停止
-			// 9个参数补全
 			reportStatus(masterURL, inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0)
 			continue
 		}
 
-		// 4. 采集指标
-
-		// 4.1 CPU (非阻塞)
 		cpuPercent, _ := proc.CPUPercent()
 
-		// 4.2 内存
 		memInfo, _ := proc.MemoryInfo()
 		memUsageMB := uint64(0)
 		if memInfo != nil {
-			memUsageMB = memInfo.RSS / 1024 / 1024 // RSS 转 MB
+			memUsageMB = memInfo.RSS / 1024 / 1024
 		}
 
-		// 4.3 启动时间
-		createTime, _ := proc.CreateTime() // 毫秒
-		// 修复之前的未使用变量错误，直接使用
+		createTime, _ := proc.CreateTime()
 		startTimeUnix := createTime / 1000
 
-		// 4.4 IO 速率计算
 		ioCounters, _ := proc.IOCounters()
 		var ioReadSpeed, ioWriteSpeed uint64
 
@@ -124,12 +130,10 @@ func checkAndReport(masterURL string) {
 			}
 		}
 
-		// 5. 发送上报 (Running 状态)
 		reportStatus(masterURL, inst.InstanceID, "running", pidInt, startTimeUnix, cpuPercent, memUsageMB, ioReadSpeed, ioWriteSpeed)
 	}
 }
 
-// 内部底层上报逻辑
 func reportStatus(masterBaseURL, instID, status string, pid int, uptime int64, cpu float64, mem, ioRead, ioWrite uint64) {
 	report := protocol.InstanceStatusReport{
 		InstanceID: instID,
@@ -145,7 +149,6 @@ func reportStatus(masterBaseURL, instID, status string, pid int, uptime int64, c
 	url := fmt.Sprintf("%s/api/instance/status_report", masterBaseURL)
 	jsonData, _ := json.Marshal(report)
 
-	// 使用全局连接池 Client 发送 (需引入 internal/worker/utils)
-	// 忽略错误，因为这是高频上报
-	_ = utils.PostJSON(url, jsonData)
+	// 【修改】使用 pkgUtils (即 ops-system/pkg/utils)
+	pkgUtils.PostJSON(url, jsonData)
 }

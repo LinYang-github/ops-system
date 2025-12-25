@@ -75,3 +75,26 @@ type LogConfig struct {
 type AuthConfig struct {
 	SecretKey string `mapstructure:"secret_key"`
 }
+
+// GlobalConfig 动态系统配置 (存入 sys_settings 表)
+type GlobalConfig struct {
+	Logic struct {
+		NodeOfflineThreshold int `json:"node_offline_threshold"` // 秒
+		HTTPClientTimeout    int `json:"http_client_timeout"`    // 秒
+	} `json:"logic"`
+
+	Worker struct {
+		HeartbeatInterval int `json:"heartbeat_interval"` // 秒
+		MonitorInterval   int `json:"monitor_interval"`   // 秒
+	} `json:"worker"`
+}
+
+// DefaultGlobalConfig 获取默认配置
+func DefaultGlobalConfig() GlobalConfig {
+	var c GlobalConfig
+	c.Logic.NodeOfflineThreshold = 30
+	c.Logic.HTTPClientTimeout = 5
+	c.Worker.HeartbeatInterval = 5
+	c.Worker.MonitorInterval = 3
+	return c
+}

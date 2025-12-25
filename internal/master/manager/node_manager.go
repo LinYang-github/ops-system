@@ -3,6 +3,7 @@ package manager
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -30,13 +31,25 @@ type NodeManager struct {
 	offlineThreshold time.Duration
 }
 
-// NewNodeManager 初始化
-// 【修复点】：增加 offlineThreshold 参数，匹配 server.go 的调用
 func NewNodeManager(db *sql.DB, tsdb *monitor.MemoryTSDB, offlineThreshold time.Duration) *NodeManager {
+	// 防止阈值为 0 导致所有节点立即离线
+	if offlineThreshold <= 0 {
+		offlineThreshold = 30 * time.Second
+	}
+
 	return &NodeManager{
 		db:               db,
 		tsdb:             tsdb,
 		offlineThreshold: offlineThreshold,
+	}
+}
+
+// SetOfflineThreshold 动态设置离线阈值 (修复报错的关键方法)
+func (nm *NodeManager) SetOfflineThreshold(d time.Duration) {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	if d > 0 {
+		nm.offlineThreshold = d
 	}
 }
 
@@ -69,6 +82,7 @@ func (nm *NodeManager) HandleHeartbeat(req protocol.RegisterRequest, remoteIP st
 	err := nm.db.QueryRow("SELECT name FROM node_infos WHERE ip = ?", remoteIP).Scan(&existsName)
 
 	if err == sql.ErrNoRows {
+		// 新节点插入
 		insertSQL := `INSERT INTO node_infos (
 			ip, port, hostname, name, mac_addr, os, arch, 
 			cpu_cores, mem_total, disk_total, status, last_heartbeat
@@ -76,19 +90,26 @@ func (nm *NodeManager) HandleHeartbeat(req protocol.RegisterRequest, remoteIP st
 
 		name := req.Info.Hostname
 
-		nm.db.Exec(insertSQL,
+		_, err := nm.db.Exec(insertSQL,
 			remoteIP, req.Port, req.Info.Hostname, name, req.Info.MacAddr, req.Info.OS, req.Info.Arch,
 			req.Info.CPUCores, req.Info.MemTotal, req.Info.DiskTotal, "online", now,
 		)
+		if err != nil {
+			log.Printf("!!! [NodeManager] Insert Failed: %v", err)
+		}
 	} else {
+		// 更新静态信息
 		updateSQL := `UPDATE node_infos SET 
 			port=?, hostname=?, mac_addr=?, os=?, status=?, last_heartbeat=?
 			WHERE ip=?`
 
-		nm.db.Exec(updateSQL,
+		_, err := nm.db.Exec(updateSQL,
 			req.Port, req.Info.Hostname, req.Info.MacAddr, req.Info.OS, "online", now,
 			remoteIP,
 		)
+		if err != nil {
+			log.Printf("!!! [NodeManager] Update Failed: %v", err)
+		}
 	}
 }
 
@@ -103,6 +124,7 @@ func (nm *NodeManager) GetAllNodes() []protocol.NodeInfo {
 	`
 	rows, err := nm.db.Query(query)
 	if err != nil {
+		log.Printf("!!! [NodeManager] Query Failed: %v", err)
 		return []protocol.NodeInfo{}
 	}
 	defer rows.Close()
@@ -118,6 +140,7 @@ func (nm *NodeManager) GetAllNodes() []protocol.NodeInfo {
 			&n.Status, &n.LastHeartbeat,
 		)
 		if err != nil {
+			log.Printf("!!! [NodeManager] Scan Row Failed: %v", err)
 			continue
 		}
 

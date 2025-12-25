@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ops-system/pkg/config"
 )
 
 type ConfigManager struct {
@@ -190,4 +192,36 @@ func (cm *ConfigManager) ProxyDelete(dataId, group, tenant string) error {
 		return fmt.Errorf("delete failed: %s", string(body))
 	}
 	return nil
+}
+
+// GetGlobalConfig 获取全局配置 (如果 DB 没有，返回默认值)
+func (cm *ConfigManager) GetGlobalConfig() (*config.GlobalConfig, error) {
+	var val string
+	err := cm.db.QueryRow(`SELECT value FROM sys_settings WHERE key = 'global_config'`).Scan(&val)
+
+	cfg := config.DefaultGlobalConfig() // 默认值
+
+	if err == sql.ErrNoRows {
+		return &cfg, nil // 返回默认
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal([]byte(val), &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// SaveGlobalConfig 保存全局配置
+func (cm *ConfigManager) SaveGlobalConfig(cfg config.GlobalConfig) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	bytes, _ := json.Marshal(cfg)
+	_, err := cm.db.Exec(`INSERT OR REPLACE INTO sys_settings (key, value, updated_at) VALUES (?, ?, ?)`,
+		"global_config", string(bytes), time.Now().Unix())
+
+	return err
 }

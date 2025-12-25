@@ -72,6 +72,10 @@
             <el-menu-item index="alerts" @click="handleMenuSelect('alerts')">
               <el-icon><Bell /></el-icon><span>告警中心</span>
             </el-menu-item>
+            <el-menu-item index="settings" @click="handleMenuSelect('settings')">
+              <el-icon><Tools /></el-icon>
+              <span>系统设置</span>
+            </el-menu-item>
           </el-menu>
         </el-aside>
 
@@ -148,6 +152,7 @@ import OpLog from './components/OpLog.vue'
 import ConfigCenter from './components/ConfigCenter.vue'
 import BackupManager from './components/BackupManager.vue'
 import AlertCenter from './components/AlertCenter.vue'
+import Settings from './components/Settings.vue'
 
 // 状态
 const isDark = ref(false)
@@ -163,6 +168,7 @@ const newSys = reactive({ name: '', description: '' })
 
 // 计算当前组件
 const currentComponent = computed(() => {
+  if (activeMenu.value === 'settings') return Settings
   if (activeMenu.value === 'alerts') return AlertCenter
   if (activeMenu.value === 'backups') return BackupManager
   if (activeMenu.value === 'config') return ConfigCenter
@@ -174,6 +180,7 @@ const currentComponent = computed(() => {
 
 // 计算标题
 const headerTitle = computed(() => {
+  if (activeMenu.value === 'settings') return '系统设置'
   if (activeMenu.value === 'alerts') return '告警中心'
   if (activeMenu.value === 'backups') return '数据灾备中心'
   if (activeMenu.value === 'logs') return '操作日志审计'

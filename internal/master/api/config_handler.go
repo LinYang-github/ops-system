@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"ops-system/internal/master/manager"
 	"ops-system/pkg/code"
+	"ops-system/pkg/config"
 	"ops-system/pkg/e"
 	"ops-system/pkg/response"
+	"ops-system/pkg/utils"
 )
 
 // NacosSettings 获取/保存连接配置
@@ -178,6 +181,42 @@ func (h *ServerHandler) NacosDelete(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, e.New(code.NacosError, fmt.Sprintf("删除配置失败: %v", err), err))
 		return
 	}
+
+	response.Success(w, nil)
+}
+
+// handleGetGlobalConfig 获取系统设置
+func (h *ServerHandler) GetGlobalConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := h.configMgr.GetGlobalConfig()
+	if err != nil {
+		response.Error(w, e.New(code.DatabaseError, "读取配置失败", err))
+		return
+	}
+	response.Success(w, cfg)
+}
+
+// handleUpdateGlobalConfig 更新系统设置 (含热更新逻辑)
+func (h *ServerHandler) UpdateGlobalConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg config.GlobalConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "配置格式错误", err))
+		return
+	}
+
+	// 1. 保存到数据库
+	if err := h.configMgr.SaveGlobalConfig(cfg); err != nil {
+		response.Error(w, e.New(code.DatabaseError, "保存配置失败", err))
+		return
+	}
+
+	// 2. 触发 Master 内存热更新
+	// 更新 HTTP Client
+	utils.SetTimeout(time.Duration(cfg.Logic.HTTPClientTimeout) * time.Second)
+	// 更新 Node Manager
+	h.nodeMgr.SetOfflineThreshold(time.Duration(cfg.Logic.NodeOfflineThreshold) * time.Second)
+
+	// 3. (可选) 记录审计日志
+	h.logMgr.RecordLog(utils.GetClientIP(r), "update_config", "system", "global", "Updated system settings", "success")
 
 	response.Success(w, nil)
 }

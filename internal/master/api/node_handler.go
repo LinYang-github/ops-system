@@ -26,32 +26,41 @@ func (h *ServerHandler) HandleHeartbeat(w http.ResponseWriter, r *http.Request) 
 
 	var req protocol.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// 心跳频繁，JSON错误通常意味着协议不匹配
 		response.Error(w, e.New(code.InvalidJSON, "Invalid heartbeat payload", err))
 		return
 	}
 
-	// 1. 获取连接层 IP
 	remoteIP := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
 		remoteIP = host
 	}
-
-	// 2. 智能 IP 修正 (处理本地开发环境)
-	if (remoteIP == "127.0.0.1" || remoteIP == "::1") &&
-		req.Info.IP != "" && req.Info.IP != "127.0.0.1" {
+	if (remoteIP == "127.0.0.1" || remoteIP == "::1") && req.Info.IP != "" && req.Info.IP != "127.0.0.1" {
 		remoteIP = req.Info.IP
 	}
 
-	// 3. 更新数据库 (无锁/低频锁)
+	// 1. 更新数据库 (打印日志以便调试)
+	// 如果 nodeManager 内部有错误，它会打印到控制台
 	h.nodeMgr.HandleHeartbeat(req, remoteIP)
 
-	// 4. 触发 WebSocket 广播 (Hub 会自动节流)
+	// 2. 广播 (确保 ws 包导入正确)
 	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
-	// 心跳接口通常只返回简单文本或标准成功响应
-	// 这里为了统一格式返回 standard response，Worker 端通常只检查 http status 200
-	response.Success(w, "pong")
+	// 3. 获取动态配置
+	var hbInterval, monInterval int64 = 5, 3
+	if globalCfg, err := h.configMgr.GetGlobalConfig(); err == nil {
+		hbInterval = int64(globalCfg.Worker.HeartbeatInterval)
+		monInterval = int64(globalCfg.Worker.MonitorInterval)
+	}
+
+	// 4. 返回标准响应
+	resp := protocol.HeartbeatResponse{
+		Code:              200, // 这里的 Code 仅仅是 payload 里的一个字段，不是外层信封的 Code
+		HeartbeatInterval: hbInterval,
+		MonitorInterval:   monInterval,
+	}
+
+	// 最终返回 JSON: { "code": 0, "msg": "success", "data": { "code": 200, "heartbeat_interval": 5... } }
+	response.Success(w, resp)
 }
 
 // ListNodes 获取节点列表

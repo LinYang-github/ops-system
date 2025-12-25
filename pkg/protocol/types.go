@@ -261,3 +261,10 @@ type AlertEvent struct {
 	StartTime  int64   `json:"start_time"`
 	EndTime    int64   `json:"end_time"` // resolved 时更新
 }
+
+// HeartbeatResponse 心跳响应 (Master -> Worker)
+type HeartbeatResponse struct {
+	Code              int   `json:"code"`
+	HeartbeatInterval int64 `json:"heartbeat_interval"` // 秒
+	MonitorInterval   int64 `json:"monitor_interval"`   // 秒
+}

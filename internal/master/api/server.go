@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"time"
 
 	"ops-system/internal/master/db"
 	"ops-system/internal/master/manager"
@@ -73,9 +74,20 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	pkgMgr := manager.NewPackageManager(storeProvider)
 	configMgr := manager.NewConfigManager(database)
 	backupMgr := manager.NewBackupManager(database, cfg.Storage.UploadDir)
-
-	// AlertManager 依赖 DB, NodeManager, InstanceManager
 	alertMgr := manager.NewAlertManager(database, nodeMgr, instMgr)
+
+	globalCfg, err := configMgr.GetGlobalConfig()
+	if err == nil {
+		log.Printf("Loaded global config from DB: %+v", globalCfg)
+		// 应用配置
+		utils.InitHTTPClient(time.Duration(globalCfg.Logic.HTTPClientTimeout)*time.Second, cfg.Auth.SecretKey)
+		// 注意：NodeManager 初始化时传入动态值
+		nodeMgr = manager.NewNodeManager(database, monitorStore, time.Duration(globalCfg.Logic.NodeOfflineThreshold)*time.Second)
+	} else {
+		log.Printf("Using default/flag config")
+		utils.InitHTTPClient(cfg.Logic.HTTPClientTimeout, cfg.Auth.SecretKey)
+		nodeMgr = manager.NewNodeManager(database, monitorStore, cfg.Logic.NodeOfflineThreshold)
+	}
 
 	// 5. 初始化全局 Handler 容器
 	// 将所有 Manager 注入到 Handler 中，彻底消除全局变量
@@ -156,6 +168,14 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/nacos/config/detail", h.NacosConfigDetail)
 	mux.HandleFunc("/api/nacos/config/publish", h.NacosPublish)
 	mux.HandleFunc("/api/nacos/config/delete", h.NacosDelete)
+
+	mux.HandleFunc("/api/settings/global", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			h.GetGlobalConfig(w, r)
+		} else if r.Method == http.MethodPost {
+			h.UpdateGlobalConfig(w, r)
+		}
+	})
 
 	// --- Backup 相关 (backup_handler.go) ---
 	mux.HandleFunc("/api/backups", h.ListBackups)
