@@ -17,6 +17,11 @@
             active-text-color="var(--el-color-primary)"
             :unique-opened="true"
           >
+          <!-- 0. 系统概览 -->
+            <el-menu-item index="dashboard" @click="handleMenuSelect('dashboard')">
+              <el-icon><Odometer /></el-icon>
+              <span>系统概览</span>
+            </el-menu-item>
             <!-- 1. 节点管理 -->
             <el-menu-item index="nodes" @click="handleMenuSelect('nodes')">
               <el-icon><Monitor /></el-icon>
@@ -141,7 +146,7 @@ import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
 import request from './utils/request'
 import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
-import { Moon, Sunny, Monitor, Box, Operation, Platform, Plus, Document, Coin  } from '@element-plus/icons-vue'
+import { Moon, Sunny, Monitor, Box, Operation, Platform, Plus, Document, Coin, Odometer  } from '@element-plus/icons-vue'
 import { wsStore, connectWebSocket } from './store/wsStore' // 引入 Store
 
 // 引入组件
@@ -153,10 +158,11 @@ import ConfigCenter from './components/ConfigCenter.vue'
 import BackupManager from './components/BackupManager.vue'
 import AlertCenter from './components/AlertCenter.vue'
 import Settings from './components/Settings.vue'
+import Dashboard from './components/Dashboard.vue'
 
 // 状态
 const isDark = ref(false)
-const activeMenu = ref('nodes')
+const activeMenu = ref('dashboard')
 const selectedSystemId = ref('') // 传递给子组件的 ID
 // 修改获取数据的方式：直接从 wsStore 读取
 // 注意：App.vue 本身用到的 systemList 用于渲染左侧菜单
@@ -168,6 +174,7 @@ const newSys = reactive({ name: '', description: '' })
 
 // 计算当前组件
 const currentComponent = computed(() => {
+  if (activeMenu.value === 'dashboard') return Dashboard
   if (activeMenu.value === 'settings') return Settings
   if (activeMenu.value === 'alerts') return AlertCenter
   if (activeMenu.value === 'backups') return BackupManager
@@ -180,6 +187,7 @@ const currentComponent = computed(() => {
 
 // 计算标题
 const headerTitle = computed(() => {
+  if (activeMenu.value === 'dashboard') return '系统概览'
   if (activeMenu.value === 'settings') return '系统设置'
   if (activeMenu.value === 'alerts') return '告警中心'
   if (activeMenu.value === 'backups') return '数据灾备中心'
