@@ -74,10 +74,8 @@
         <el-upload
           class="upload-drag"
           drag
-          action="/api/upload"
-          :on-success="handleUploadSuccess"
-          :on-error="handleUploadError"
-          :before-upload="beforeUpload"
+          action="" 
+          :http-request="customUpload" 
           :show-file-list="false"
         >
           <el-icon class="el-icon--upload"><upload-filled /></el-icon>
@@ -182,6 +180,8 @@ import { ref, computed, onMounted } from 'vue'
 import request from '../utils/request'
 import { ElMessage } from 'element-plus'
 import { UploadFilled, Search, Upload, Refresh, Download, Delete, Document } from '@element-plus/icons-vue'
+import axios from 'axios' 
+import JSZip from 'jszip' 
 
 // --- 状态定义 ---
 const rawPackages = ref([])
@@ -287,6 +287,64 @@ const getLatestVersion = (versions) => {
 
 const sortVersions = (versions) => {
   return [...versions].sort().reverse()
+}
+
+// --- 自定义上传逻辑 (核心) ---
+const customUpload = async (options) => {
+  const file = options.file
+  
+  try {
+    // 1. 前端解析 ZIP
+    const zip = await JSZip.loadAsync(file)
+    const configFile = zip.file("service.json")
+    
+    if (!configFile) {
+      throw new Error("压缩包内缺少 service.json")
+    }
+    
+    const configContent = await configFile.async("string")
+    let manifest
+    try {
+        manifest = JSON.parse(configContent)
+    } catch(e) {
+        throw new Error("service.json 格式错误: " + e.message)
+    }
+
+    // 2. 请求 Master 获取上传链接 (Pre-sign)
+    // request.post 返回的是 data 字段
+    const preSignRes = await request.post('/api/package/presign', manifest)
+    const { uploadUrl, fileKey } = preSignRes
+
+    // 3. 前端直传 (使用原生 axios，不走拦截器)
+    // 拦截器通常会期待 {code:0}，但 MinIO/DirectUpload 可能只返回 200 OK 空 Body
+    await axios.put(uploadUrl, file, {
+      headers: {
+        'Content-Type': 'application/zip'
+      },
+      onUploadProgress: (evt) => {
+        const percent = Math.round((evt.loaded / evt.total) * 100)
+        options.onProgress({ percent })
+      }
+    })
+
+    // 4. 回调 Master
+    await request.post('/api/package/callback', {
+      name: manifest.name,
+      version: manifest.version,
+      key: fileKey
+    })
+
+    options.onSuccess(preSignRes)
+    ElMessage.success(`上传成功: ${manifest.name} v${manifest.version}`)
+    showUploadDialog.value = false
+    fetchPackages()
+
+  } catch (e) {
+    console.error(e)
+    options.onError(e)
+    // 这里如果 e 是 Error 对象，直接 e.message，如果是拦截器 reject 的对象，可能是 e.msg
+    ElMessage.error("上传失败: " + (e.message || e))
+  }
 }
 
 onMounted(fetchPackages)

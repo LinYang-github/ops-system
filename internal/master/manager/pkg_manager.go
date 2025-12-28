@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"ops-system/pkg/protocol"
 	"ops-system/pkg/storage" // 引入新包
@@ -165,4 +166,15 @@ func (pm *PackageManager) GetManifest(name, version string) (*protocol.ServiceMa
 func (pm *PackageManager) GetDownloadURL(name, version, masterAddr string) (string, error) {
 	key := filepath.Join(name, fmt.Sprintf("%s.zip", version))
 	return pm.store.GetDownloadURL(key, masterAddr)
+}
+
+// GetUploadURL 获取上传链接 (Wrapper)
+// 【修复点】：这就是之前报错 undefined 的原因
+func (pm *PackageManager) GetUploadURL(filename string, expire time.Duration) (string, error) {
+	return pm.store.GetUploadURL(filename, expire)
+}
+
+// SaveRaw 直接保存文件流 (用于 Local 模式的 Direct Upload 接口)
+func (pm *PackageManager) SaveRaw(filename string, reader io.Reader) error {
+	return pm.store.Save(filename, reader)
 }

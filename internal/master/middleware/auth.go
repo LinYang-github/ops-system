@@ -13,21 +13,23 @@ import (
 func AuthMiddleware(secretKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+
 			// 1. 放行静态资源 (非 /api 开头的请求)
-			if !strings.HasPrefix(r.URL.Path, "/api/") {
+			if !strings.HasPrefix(path, "/api/") {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// 2. 放行 WebSocket 相关路径
-			// WebSocket 握手无法带 Header，需要放行或改用 Query 参数校验
-			if strings.HasPrefix(r.URL.Path, "/api/ws") ||
-				strings.HasPrefix(r.URL.Path, "/api/log/ws") ||
-				strings.HasPrefix(r.URL.Path, "/api/instance/logs/stream") ||
-				// 【核心修复】添加终端路径到白名单
-				strings.HasPrefix(r.URL.Path, "/api/node/terminal") {
-
-				// (可选优化：在这里校验 r.URL.Query().Get("token"))
+			// 2. 放行白名单接口
+			// - WebSocket 握手
+			// - 直传接口 (模拟 Presigned URL，不带 Token，由 Key 自身保证上下文)
+			if strings.HasPrefix(path, "/api/ws") ||
+				strings.HasPrefix(path, "/api/log/ws") ||
+				strings.HasPrefix(path, "/api/instance/logs/stream") ||
+				strings.HasPrefix(path, "/api/node/terminal") ||
+				// 【关键修复】放行本地直传接口
+				strings.HasPrefix(path, "/api/upload/direct") {
 
 				next.ServeHTTP(w, r)
 				return

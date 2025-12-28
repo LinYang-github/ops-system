@@ -3,9 +3,11 @@ package storage
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type LocalProvider struct {
@@ -66,4 +68,12 @@ func (l *LocalProvider) ListFiles() ([]FileInfo, error) {
 		return nil
 	})
 	return files, err
+}
+
+// GetUploadURL 本地模式返回 Master 的代理接口
+func (l *LocalProvider) GetUploadURL(filename string, expire time.Duration) (string, error) {
+	// 返回相对路径，前端 axios 会自动拼接 baseURL
+	// 格式: /api/upload/direct?key=xxxx.zip
+	// 前端会对这个 URL 发起 PUT 请求
+	return fmt.Sprintf("/api/upload/direct?key=%s", url.QueryEscape(filename)), nil
 }

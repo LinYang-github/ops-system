@@ -88,3 +88,14 @@ func (m *MinioProvider) ListFiles() ([]FileInfo, error) {
 	}
 	return files, nil
 }
+
+func (m *MinioProvider) GetUploadURL(filename string, expire time.Duration) (string, error) {
+	objectName := strings.ReplaceAll(filename, "\\", "/")
+
+	// 生成 PUT 请求的预签名 URL
+	url, err := m.client.PresignedPutObject(context.Background(), m.bucket, objectName, expire)
+	if err != nil {
+		return "", err
+	}
+	return url.String(), nil
+}

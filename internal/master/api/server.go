@@ -222,6 +222,9 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	fsUploads := http.FileServer(http.Dir(uploadPath))
 	mux.Handle("/download/", http.StripPrefix("/download/", fsUploads))
 
+	mux.HandleFunc("/api/package/presign", h.PresignUpload)
+	mux.HandleFunc("/api/package/callback", h.UploadCallback)
+	mux.HandleFunc("/api/upload/direct", h.HandleDirectUpload)
 	// 前端页面
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 }

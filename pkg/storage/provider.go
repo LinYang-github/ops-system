@@ -2,6 +2,7 @@ package storage
 
 import (
 	"io"
+	"time"
 )
 
 type Provider interface {
@@ -20,6 +21,11 @@ type Provider interface {
 
 	// 列出所有文件 (用于 ListPackages)
 	ListFiles() ([]FileInfo, error)
+
+	// GetUploadURL 获取上传链接 (用于前端直传)
+	// filename: 存储路径 (如 app/v1.zip)
+	// expire: 有效期
+	GetUploadURL(filename string, expire time.Duration) (string, error)
 }
 
 type FileInfo struct {
