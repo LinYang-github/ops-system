@@ -7,6 +7,7 @@
 /master
 /uploads
 /worker
+/vendor
 ops_data.db
 
 # macOS
