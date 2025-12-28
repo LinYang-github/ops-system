@@ -118,7 +118,7 @@
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item command="detail" icon="View">查看详情</el-dropdown-item>
-                    <el-dropdown-item command="terminal" icon="Terminal">Web 终端</el-dropdown-item>
+                    <el-dropdown-item command="terminal" icon="Platform">Web 终端</el-dropdown-item>
                     <el-dropdown-item command="reset" icon="RefreshLeft">重置名称</el-dropdown-item>
                     <el-dropdown-item command="delete" icon="Delete" style="color: var(--el-color-danger)" divided>删除节点</el-dropdown-item>
                   </el-dropdown-menu>
@@ -202,7 +202,10 @@
     
     <!-- 详情抽屉组件 (需确保有 NodeDetailDrawer.vue) -->
     <NodeDetailDrawer v-model="detailVisible" :nodeInfo="currentNode" />
-
+    <WebTerminal 
+      v-model="termDialog.visible" 
+      :nodeIP="termDialog.nodeIP" 
+    />
   </div>
 </template>
 
@@ -213,6 +216,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { wsStore } from '../store/wsStore'
 import { Search, Plus, Refresh, Monitor, Edit, ArrowDown, Platform, RefreshLeft, Delete, InfoFilled, View } from '@element-plus/icons-vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
+import WebTerminal from './WebTerminal.vue'
 
 // --- 状态定义 ---
 const loading = ref(false)
@@ -231,6 +235,8 @@ const pageSize = ref(20)
 const cmdDialog = reactive({
   visible: false, targetIP: '', command: '', result: '', error: '', loading: false
 })
+const termDialog = reactive({ visible: false, nodeIP: '' })
+
 
 const customColors = [
   { color: '#67C23A', percentage: 60 },
@@ -305,7 +311,9 @@ const handleCommand = (cmd, row) => {
         fetchNodes()
     })
   } else if (cmd === 'terminal') {
-    openCmdDialog(row)
+    termDialog.nodeIP = row.ip
+    termDialog.visible = true
+    //openCmdDialog(row)
   } else if (cmd === 'detail') {
     currentNode.value = row
     detailVisible.value = true

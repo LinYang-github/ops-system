@@ -25,6 +25,7 @@ func InitHandler(url string) {
 // StartWorkerServer 启动 Worker HTTP Server
 func StartWorkerServer(port string) {
 	http.HandleFunc("/api/exec", handleExec)
+	http.HandleFunc("/api/terminal/ws", HandleTerminal)
 	http.HandleFunc("/api/deploy", handleDeploy)
 	http.HandleFunc("/api/instance/action", handleInstanceAction) // 处理实例启停
 	http.HandleFunc("/api/external/register", handleRegisterExternal)

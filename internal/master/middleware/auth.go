@@ -19,14 +19,16 @@ func AuthMiddleware(secretKey string) func(http.Handler) http.Handler {
 				return
 			}
 
-			// 2. 放行 WebSocket (握手时无法带 Header，通常通过 Query 参数或 Cookie，这里暂且放行或改为 Query 校验)
-			// 为了安全，建议 WebSocket 改为 Query 参数鉴权：ws://...?token=xxx
-			if strings.HasPrefix(r.URL.Path, "/api/ws") || strings.HasPrefix(r.URL.Path, "/api/log/ws") || strings.HasPrefix(r.URL.Path, "/api/instance/logs/stream") {
-				// 简单实现：检查 Query 参数 token (需要在前端 WS 连接时加上)
-				// queryToken := r.URL.Query().Get("token")
-				// if queryToken != secretKey { ... }
+			// 2. 放行 WebSocket 相关路径
+			// WebSocket 握手无法带 Header，需要放行或改用 Query 参数校验
+			if strings.HasPrefix(r.URL.Path, "/api/ws") ||
+				strings.HasPrefix(r.URL.Path, "/api/log/ws") ||
+				strings.HasPrefix(r.URL.Path, "/api/instance/logs/stream") ||
+				// 【核心修复】添加终端路径到白名单
+				strings.HasPrefix(r.URL.Path, "/api/node/terminal") {
 
-				// 暂时放行，由后续逻辑处理，或者你可以在这里加上 Query 参数校验
+				// (可选优化：在这里校验 r.URL.Query().Get("token"))
+
 				next.ServeHTTP(w, r)
 				return
 			}

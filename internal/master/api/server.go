@@ -215,6 +215,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 
 	// --- WebSocket ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
+	mux.HandleFunc("/api/node/terminal", h.HandleNodeTerminal)
 
 	// --- 静态资源 ---
 	// 文件下载 (uploadPath 来自参数，不再依赖全局变量)
