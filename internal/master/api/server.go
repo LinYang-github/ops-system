@@ -168,13 +168,20 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 
 	log.Printf("Master UI & API running on %s", cfg.Server.Port)
 
-	// 12. 添加鉴权中间件
-	authHandler := middleware.AuthMiddleware(cfg.Auth.SecretKey)(mux)
+	// 1. 先应用鉴权 (Auth)
+	var handler http.Handler = middleware.AuthMiddleware(cfg.Auth.SecretKey)(mux)
+
+	// 2. 再应用超时 (Timeout)
+	// 读取配置中的超时时间，如果配置为0或负数，则不启用超时
+	if cfg.Server.APITimeout > 0 {
+		timeoutDuration := time.Duration(cfg.Server.APITimeout) * time.Second
+		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
+	}
 
 	server := &http.Server{
 		Addr:         cfg.Server.Port,
-		Handler:      authHandler, // 使用包装后的 Handler
-		ReadTimeout:  0,           // 必须为 0 以支持大文件上传和 WebSocket
+		Handler:      handler, // 使用包装后的 Handler
+		ReadTimeout:  0,       // 必须为 0 以支持大文件上传和 WebSocket
 		WriteTimeout: 0,
 	}
 

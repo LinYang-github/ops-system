@@ -19,6 +19,7 @@ type ServerConfig struct {
 	DBPath       string        `mapstructure:"db_path"`
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	APITimeout   int           `mapstructure:"api_timeout"`
 }
 
 type StorageConfig struct {

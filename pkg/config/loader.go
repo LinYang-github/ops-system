@@ -18,6 +18,7 @@ func LoadMasterConfig(cfgFile string) (*MasterConfig, error) {
 	// 否则可能会覆盖掉 pflag 的逻辑。
 	v.SetDefault("server.read_timeout", 0)
 	v.SetDefault("server.write_timeout", 0)
+	v.SetDefault("server.api_timeout", 10) // 默认 10秒超时
 
 	v.SetDefault("storage.type", "local")
 	// MinIO 默认值
