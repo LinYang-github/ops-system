@@ -3,6 +3,7 @@ package api
 import (
 	"ops-system/internal/master/manager"
 	"ops-system/internal/master/monitor"
+	"ops-system/internal/master/scheduler"
 )
 
 // ServerHandler 持有所有业务逻辑依赖
@@ -17,6 +18,7 @@ type ServerHandler struct {
 	alertMgr     *manager.AlertManager
 	backupMgr    *manager.BackupManager
 	monitorStore *monitor.MemoryTSDB
+	scheduler    *scheduler.Scheduler
 }
 
 // NewServerHandler 构造函数
@@ -30,6 +32,7 @@ func NewServerHandler(
 	alert *manager.AlertManager,
 	backup *manager.BackupManager,
 	monitor *monitor.MemoryTSDB,
+	scheduler *scheduler.Scheduler,
 ) *ServerHandler {
 	return &ServerHandler{
 		sysMgr:       sys,
@@ -41,5 +44,6 @@ func NewServerHandler(
 		alertMgr:     alert,
 		backupMgr:    backup,
 		monitorStore: monitor,
+		scheduler:    scheduler,
 	}
 }

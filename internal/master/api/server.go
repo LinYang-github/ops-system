@@ -11,6 +11,7 @@ import (
 	"ops-system/internal/master/manager"
 	"ops-system/internal/master/middleware"
 	"ops-system/internal/master/monitor"
+	"ops-system/internal/master/scheduler"
 	"ops-system/internal/master/ws"
 
 	"ops-system/pkg/config"
@@ -108,6 +109,9 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		}
 	}()
 
+	// [新增] 初始化调度器
+	sched := scheduler.NewScheduler()
+
 	// 5. 初始化全局 Handler 容器
 	// 将所有 Manager 注入到 Handler 中，彻底消除全局变量
 	serverHandler := NewServerHandler(
@@ -120,6 +124,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		alertMgr,
 		backupMgr,
 		monitorStore,
+		sched,
 	)
 
 	// 6. 启动 WebSocket Hub

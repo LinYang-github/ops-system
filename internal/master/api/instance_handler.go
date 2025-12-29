@@ -57,8 +57,28 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var targetNodeIP string
+
+	// ==========================================
+	// 【新增】调度逻辑
+	// ==========================================
+	if req.NodeIP == "auto" {
+		// 1. 获取所有节点数据的快照 (包含实时 CPU/Mem)
+		allNodes := h.nodeMgr.GetAllNodes()
+
+		// 2. 调度算法选择
+		selectedIP, found := h.scheduler.SelectBestNode(allNodes)
+		if !found {
+			response.Error(w, e.New(code.NodeOffline, "自动调度失败: 无可用在线节点", nil))
+			return
+		}
+		targetNodeIP = selectedIP
+	} else {
+		targetNodeIP = req.NodeIP
+	}
+
 	// 1. 检查节点
-	node, exists := h.nodeMgr.GetNode(req.NodeIP)
+	node, exists := h.nodeMgr.GetNode(targetNodeIP)
 	if !exists {
 		response.Error(w, e.New(code.NodeOffline, "目标节点不在线", nil))
 		return
@@ -77,7 +97,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID:             instanceID,
 		SystemID:       req.SystemID,
-		NodeIP:         req.NodeIP,
+		NodeIP:         targetNodeIP,
 		ServiceName:    req.ServiceName,
 		ServiceVersion: req.ServiceVersion,
 		Status:         "deploying",
@@ -95,7 +115,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		DownloadURL: downloadURL,
 	}
 	reqBody, _ := json.Marshal(workerReq)
-	targetURL := fmt.Sprintf("http://%s:%d/api/deploy", node.IP, node.Port)
+	targetURL := fmt.Sprintf("http://%s:%d/api/deploy", targetNodeIP, node.Port)
 
 	// 5. 发送请求 (Worker 异步处理)
 	if err := utils.PostJSON(targetURL, reqBody); err != nil {
@@ -110,7 +130,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 记录日志
-	logDetail := fmt.Sprintf("Node: %s, Ver: %s, ID: %s", req.NodeIP, req.ServiceVersion, instanceID)
+	logDetail := fmt.Sprintf("Node: %s, Ver: %s, ID: %s", targetNodeIP, req.ServiceVersion, instanceID)
 	h.logMgr.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, logDetail, "success")
 
 	response.Success(w, nil)

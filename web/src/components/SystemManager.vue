@@ -218,15 +218,36 @@
     </el-dialog>
 
     <!-- 弹窗2：部署实例 -->
-    <el-dialog v-model="deployDialog.visible" title="部署实例" width="350px">
-        <el-form label-width="70px" size="small">
-            <el-form-item label="节点">
-                <el-select v-model="deployDialog.nodeIP" style="width:100%" placeholder="请选择在线节点">
-                    <el-option v-for="n in availableNodes" :key="n.ip" :label="`${n.hostname} (${n.ip})`" :value="n.ip" />
-                </el-select>
-            </el-form-item>
-        </el-form>
-        <template #footer><el-button type="primary" size="small" @click="deployInstance" :loading="deployDialog.loading">部署</el-button></template>
+    <el-dialog v-model="deployDialog.visible" title="部署实例" width="400px">
+      <div class="deploy-confirm-info">
+        <p>服务：<b>{{ deployDialog.serviceName }}</b> (v{{ deployDialog.version }})</p>
+      </div>
+      <el-form label-width="80px">
+        <el-form-item label="目标节点">
+           <el-select v-model="deployDialog.nodeIP" placeholder="请选择或自动调度" style="width: 100%">
+             
+             <!-- 选项 1: 自动选择 -->
+             <el-option 
+                label="🤖 自动选择 (负载最低)" 
+                value="auto" 
+                style="font-weight: bold; color: var(--el-color-primary);"
+             />
+
+             <!-- 选项 2: 在线节点列表 -->
+             <!-- 【修复点】这里必须使用 availableNodes -->
+             <el-option 
+               v-for="n in availableNodes" 
+               :key="n.ip" 
+               :label="`${n.hostname} (${n.ip})`" 
+               :value="n.ip" 
+             />
+             
+           </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" @click="deployInstance" :loading="deployDialog.loading">确定部署</el-button>
+      </template>
     </el-dialog>
 
     <!-- 弹窗3：纳管外部服务 -->
@@ -429,10 +450,14 @@ const addModule = async () => { await request.post('/api/systems/module/add', { 
 const deleteModule = async (id) => { await request.post('/api/systems/module/delete', { id }); refreshData() }
 
 // 部署
-const openDeployDialog = async (mod) => { 
-  deployDialog.visible = true; 
-  deployDialog.targetModule = mod 
-  deployDialog.nodeIP = '' // 重置
+const openDeployDialog = async (mod) => {
+  deployDialog.visible = true
+  deployDialog.targetModule = mod
+  deployDialog.serviceName = mod.package_name
+  deployDialog.version = mod.package_version
+  
+  // 设置默认值为 auto
+  deployDialog.nodeIP = 'auto' 
 }
 const deployInstance = async () => { 
   if(!deployDialog.nodeIP) return ElMessage.warning('请选择节点')
