@@ -93,7 +93,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	logManager = manager.NewLogManager(database)
 	sysManager = manager.NewSystemManager(database)
 	instManager = manager.NewInstanceManager(database)
-	pkgManager = manager.NewPackageManager(storeProvider)
+	pkgManager = manager.NewPackageManager(database, storeProvider)
 	configManager = manager.NewConfigManager(database)
 	backupManager = manager.NewBackupManager(database, cfg.Storage.UploadDir)
 

@@ -311,33 +311,30 @@ const customUpload = async (options) => {
     }
 
     // 2. 请求 Master 获取上传链接 (Pre-sign)
-    // request.post 返回的是 data 字段
     const preSignRes = await request.post('/api/package/presign', manifest)
     const { uploadUrl, fileKey } = preSignRes
 
-    // 3. 前端直传 (使用原生 axios，不走拦截器)
-    // 拦截器通常会期待 {code:0}，但 MinIO/DirectUpload 可能只返回 200 OK 空 Body
+    // 3. 前端直传 (使用原生 axios)
     await axios.put(uploadUrl, file, {
-      headers: {
-        'Content-Type': 'application/zip'
-      },
+      headers: { 'Content-Type': 'application/zip' },
       onUploadProgress: (evt) => {
         const percent = Math.round((evt.loaded / evt.total) * 100)
         options.onProgress({ percent })
       }
     })
 
-    // 4. 回调 Master
+    // 4. 【关键修改】通知 Master 上传完成，并带上元数据
+    // 这样后端就不需要再去读文件解压了，直接存库
     await request.post('/api/package/callback', {
-      name: manifest.name,
-      version: manifest.version,
+      manifest: manifest, // 传完整的对象
+      size: file.size,    // 传文件大小
       key: fileKey
     })
 
     options.onSuccess(preSignRes)
     ElMessage.success(`上传成功: ${manifest.name} v${manifest.version}`)
     showUploadDialog.value = false
-    fetchPackages()
+    fetchPackages() // 刷新列表
 
   } catch (e) {
     console.error(e)

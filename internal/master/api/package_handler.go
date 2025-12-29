@@ -155,19 +155,30 @@ func (h *ServerHandler) PresignUpload(w http.ResponseWriter, r *http.Request) {
 // 2. 回调接口
 // POST /api/package/callback
 func (h *ServerHandler) UploadCallback(w http.ResponseWriter, r *http.Request) {
+	// 定义前端传来的请求结构
+	// 前端需要传：manifest对象, 文件大小
 	var req struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-		Key     string `json:"key"` // MinIO 中的 Key
+		Manifest protocol.ServiceManifest `json:"manifest"`
+		Size     int64                    `json:"size"`
+		Key      string                   `json:"key"` // 存储路径 (可选，用于校验)
 	}
-	json.NewDecoder(r.Body).Decode(&req)
 
-	// 此时文件已经在 MinIO 里了
-	// 我们需要确认一下文件是否存在 (Stat)，然后更新某些元数据(如果需要)
-	// 由于 ListPackages 是实时查 MinIO 的，其实这里不做操作也可以。
-	// 但为了严谨，可以检查一下文件是否存在。
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
+		return
+	}
 
-	// h.pkgMgr.CheckExists(req.Key) ...
+	// 简单校验
+	if req.Manifest.Name == "" || req.Manifest.Version == "" {
+		response.Error(w, e.New(code.ParamError, "Manifest 缺少必要字段", nil))
+		return
+	}
+
+	// 直接入库
+	if err := h.pkgMgr.RegisterPackageMetadata(&req.Manifest, req.Size); err != nil {
+		response.Error(w, e.New(code.DatabaseError, "元数据保存失败", err))
+		return
+	}
 
 	response.Success(w, nil)
 }

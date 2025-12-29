@@ -50,6 +50,17 @@ func initTables(db *sql.DB) {
 			last_heartbeat INTEGER
 		);`,
 
+		// 服务包元数据表
+		// 联合主键：name + version
+		`CREATE TABLE IF NOT EXISTS package_infos (
+			name TEXT,
+			version TEXT,
+			size INTEGER,
+			upload_time INTEGER,
+			manifest TEXT, -- 存储 service.json 的完整内容
+			PRIMARY KEY (name, version)
+		);`,
+
 		// 通用配置表
 		`CREATE TABLE IF NOT EXISTS sys_settings (
 			key TEXT PRIMARY KEY,
