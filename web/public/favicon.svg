@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- 背景圆角矩形 (Element Plus Blue) -->
+  <rect x="0" y="0" width="128" height="128" rx="24" fill="#409EFF"/>
+  
+  <!-- 服务器堆栈意象 -->
+  <g fill="white">
+    <!-- 上层服务器 -->
+    <rect x="24" y="28" width="80" height="16" rx="4"/>
+    <circle cx="36" cy="36" r="3" fill="#67C23A"/> <!-- 绿灯 -->
+    
+    <!-- 中层服务器 -->
+    <rect x="24" y="56" width="80" height="16" rx="4"/>
+    <circle cx="36" cy="64" r="3" fill="#E6A23C"/> <!-- 黄灯 -->
+    
+    <!-- 下层服务器 -->
+    <rect x="24" y="84" width="80" height="16" rx="4"/>
+    <circle cx="36" cy="92" r="3" fill="#F56C6C"/> <!-- 红灯 -->
+  </g>
+  
+  <!-- 连接线/监控波纹 -->
+  <path d="M104 20 V108" stroke="white" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+</svg>

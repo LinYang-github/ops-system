@@ -1,10 +1,18 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>web</title>
+    <title>系统运维平台</title>
+    <!-- 预加载样式，防止闪烁 -->
+    <style>
+      body { margin: 0; padding: 0; background-color: #f5f7fa; }
+      /* 暗黑模式初始背景，避免刷新时白屏闪烁 */
+      @media (prefers-color-scheme: dark) {
+        body { background-color: #121212; }
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
