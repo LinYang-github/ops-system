@@ -1,19 +1,20 @@
 <template>
   <div class="view-container">
     
-    <!-- 状态 A：未连接 (居中显示) -->
+    <!-- 状态 A：未连接 -->
     <div v-if="!connected" class="empty-wrapper">
       <el-empty description="尚未连接 Nacos 配置中心">
         <template #extra>
-          <el-button type="primary" icon="Setting" @click="showSettings = true">配置连接信息</el-button>
+          <div class="guide-text">
+            请前往 <el-tag @click="goToSettings" style="cursor: pointer">系统设置 -> 配置中心</el-tag> 填写连接信息。
+          </div>
         </template>
       </el-empty>
     </div>
 
-    <!-- 状态 B：已连接 (内容区域) -->
+    <!-- 状态 B：已连接 (正常功能) -->
     <div v-else class="content-body" v-loading="loading">
       <el-card shadow="never" class="main-card">
-        <!-- 卡片头部：替代原来的页面 Header -->
         <template #header>
           <div class="card-header">
             <div class="header-left">
@@ -22,13 +23,11 @@
                 <span class="dot"></span> Connected
               </el-tag>
             </div>
-            <div class="header-right">
-              <el-button icon="Setting" link @click="showSettings = true">连接设置</el-button>
-            </div>
+            <!-- 去掉了原来的“连接设置”按钮 -->
           </div>
         </template>
 
-        <!-- 筛选栏 -->
+        <!-- 筛选栏 (保持不变) -->
         <div class="filter-bar">
           <el-select v-model="currNs" placeholder="命名空间" style="width: 220px" @change="fetchConfigs">
             <template #prefix><el-icon><Folder /></el-icon></template>
@@ -42,7 +41,7 @@
           <el-button type="primary" plain icon="Plus" @click="openEdit(null)">新建配置</el-button>
         </div>
 
-        <!-- 表格 -->
+        <!-- 表格 (保持不变) -->
         <el-table :data="configList" style="width: 100%" stripe class="custom-table">
           <el-table-column prop="dataId" label="Data ID" min-width="200" show-overflow-tooltip>
              <template #default="scope">
@@ -70,7 +69,6 @@
           </el-table-column>
         </el-table>
         
-        <!-- 分页 -->
         <div class="pagination">
            <el-pagination 
              layout="total, prev, pager, next" 
@@ -84,20 +82,7 @@
       </el-card>
     </div>
 
-    <!-- 弹窗：连接设置 -->
-    <el-dialog v-model="showSettings" title="Nacos 连接配置" width="400px" append-to-body>
-      <el-form label-width="70px" size="large">
-        <el-form-item label="地址"><el-input v-model="settings.url" placeholder="http://127.0.0.1:8848" /></el-form-item>
-        <el-form-item label="账号"><el-input v-model="settings.username" placeholder="nacos" /></el-form-item>
-        <el-form-item label="密码"><el-input v-model="settings.password" type="password" show-password /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showSettings=false">取消</el-button>
-        <el-button type="primary" @click="saveSettings">保存并连接</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 弹窗：编辑配置 -->
+    <!-- 编辑弹窗 (保持不变) -->
     <el-dialog 
       v-model="editDialog.visible" 
       :title="editDialog.isNew ? '新建配置' : '编辑配置'" 
@@ -124,13 +109,7 @@
         </div>
         
         <el-form-item label="配置内容">
-           <el-input 
-             v-model="editForm.content" 
-             type="textarea" 
-             :rows="20" 
-             class="code-editor" 
-             placeholder="请输入配置内容..."
-           />
+           <el-input v-model="editForm.content" type="textarea" :rows="20" class="code-editor" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -142,16 +121,18 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, inject } from 'vue'
 import request from '../utils/request'
 import { ElMessage } from 'element-plus'
 import { Setting, Search, Plus, Edit, Delete, Folder } from '@element-plus/icons-vue'
 
-const connected = ref(false)
-const showSettings = ref(false)
-const loading = ref(false)
-const settings = reactive({ url: '', username: '', password: '' })
+// 如果你想在组件间跳转，需要在 App.vue 提供切换方法，这里为了简单使用 inject 或者 location hack
+// 但最好的方式是 App.vue 通过 provide('navigate') 提供方法
+// 假设 App.vue 没有 provide，我们可以通过修改 activeMenu 的 props 来通知父组件（如果结构支持）
+// 这里简单演示：提示用户去点菜单。
 
+const connected = ref(false)
+const loading = ref(false)
 const namespaces = ref([])
 const currNs = ref('')
 const currGroup = ref('')
@@ -159,42 +140,30 @@ const currDataId = ref('')
 const configList = ref([])
 const page = ref(1)
 const total = ref(0)
-
 const editDialog = reactive({ visible: false, isNew: false })
 const editForm = reactive({ dataId: '', group: 'DEFAULT_GROUP', type: 'yaml', content: '' })
 
-// 初始化检查连接
+// 检查连接
 const checkConnection = async () => {
   try {
     const res = await request.get('/api/nacos/settings')
     if(res && res.url) {
-      settings.url = res.url
-      settings.username = res.username
       await fetchNamespaces()
       connected.value = true
       fetchConfigs()
+    } else {
+      connected.value = false
     }
   } catch(e) {
     connected.value = false
   }
 }
 
-const saveSettings = async () => {
-  try {
-    await request.post('/api/nacos/settings', settings)
-    ElMessage.success('保存成功')
-    showSettings.value = false
-    checkConnection()
-  } catch(e) { /* request.js handles error */ }
-}
-
 const fetchNamespaces = async () => {
   const res = await request.get('/api/nacos/namespaces')
   if(res && res.data) {
     namespaces.value = res.data
-    if(!currNs.value && namespaces.value.length > 0) {
-        currNs.value = namespaces.value[0].namespace
-    }
+    if(!currNs.value && namespaces.value.length > 0) currNs.value = namespaces.value[0].namespace
   }
 }
 
@@ -220,172 +189,36 @@ const fetchConfigs = async () => {
   } finally { loading.value = false }
 }
 
-const openEdit = async (row) => {
-  if (row) {
-    editDialog.isNew = false
-    editForm.dataId = row.dataId
-    editForm.group = row.group
-    editForm.type = row.type
-    // 获取详情
-    const res = await request.get('/api/nacos/config/detail', {
-        params: { tenant: currNs.value, dataId: row.dataId, group: row.group }
-    })
-    editForm.content = typeof res === 'object' ? JSON.stringify(res) : res
-  } else {
-    editDialog.isNew = true
-    editForm.dataId = ''
-    editForm.group = 'DEFAULT_GROUP'
-    editForm.content = ''
-  }
-  editDialog.visible = true
-}
+// ... openEdit, publishConfig, deleteConfig 保持不变 ...
+const openEdit = async (row) => { if (row) { editDialog.isNew = false; editForm.dataId = row.dataId; editForm.group = row.group; editForm.type = row.type; const res = await request.get('/api/nacos/config/detail', { params: { tenant: currNs.value, dataId: row.dataId, group: row.group } }); editForm.content = typeof res === 'object' ? JSON.stringify(res) : res } else { editDialog.isNew = true; editForm.dataId = ''; editForm.group = 'DEFAULT_GROUP'; editForm.content = '' } editDialog.visible = true }
+const publishConfig = async () => { try { await request.post('/api/nacos/config/publish', { tenant: currNs.value, ...editForm }); ElMessage.success('发布成功'); editDialog.visible = false; fetchConfigs() } catch(e) { } }
+const deleteConfig = async (row) => { try { await request.post('/api/nacos/config/delete', { tenant: currNs.value, dataId: row.dataId, group: row.group }); ElMessage.success('已删除'); fetchConfigs() } catch(e) { } }
 
-const publishConfig = async () => {
-  try {
-    await request.post('/api/nacos/config/publish', {
-        tenant: currNs.value,
-        ...editForm
-    })
-    ElMessage.success('发布成功')
-    editDialog.visible = false
-    fetchConfigs()
-  } catch(e) { }
-}
-
-const deleteConfig = async (row) => {
-  try {
-    await request.post('/api/nacos/config/delete', {
-        tenant: currNs.value,
-        dataId: row.dataId,
-        group: row.group
-    })
-    ElMessage.success('已删除')
-    fetchConfigs()
-  } catch(e) { }
+// 简单的跳转逻辑提示
+const goToSettings = () => {
+  ElMessage.info('请点击左侧菜单栏的 [系统设置]')
 }
 
 onMounted(checkConnection)
 </script>
 
 <style scoped>
-.view-container { 
-  height: 100%; 
-  display: flex; 
-  flex-direction: column; 
-  background: var(--el-bg-color-page); 
-}
-
-/* 空状态居中 */
-.empty-wrapper {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  background: var(--el-bg-color);
-}
-
-.content-body { 
-  padding: 20px; 
-  flex: 1; 
-  overflow: hidden; 
-  display: flex; 
-  flex-direction: column;
-}
-
-/* 主卡片样式 */
-.main-card {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--el-border-color-light);
-  background: var(--el-bg-color);
-}
-
-/* 强制卡片内容区域撑满，以便表格滚动 */
-.main-card :deep(.el-card__body) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  padding: 20px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.status-tag .dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: #fff;
-  margin-right: 4px;
-}
-
-/* 筛选栏 */
-.filter-bar {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-
-/* 表格样式 */
-.custom-table {
-  flex: 1;
-  overflow: hidden;
-}
-.data-id-text {
-  font-family: monospace;
-  font-weight: 500;
-  color: var(--el-text-color-primary);
-}
-.type-text {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  text-transform: uppercase;
-}
-
-.pagination {
-  margin-top: 15px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* 弹窗表单 */
-.form-row {
-  display: flex;
-  gap: 20px;
-}
-
-/* 代码编辑器样式适配黑夜模式 */
-.code-editor :deep(.el-textarea__inner) {
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  background-color: #f9f9f9;
-  color: #333;
-}
-
-/* 黑夜模式特定样式 */
-html.dark .code-editor :deep(.el-textarea__inner) {
-  background-color: #1e1e1e;
-  color: #d4d4d4;
-  border-color: #4c4d4f;
-}
+.view-container { height: 100%; display: flex; flex-direction: column; background: var(--el-bg-color-page); }
+.empty-wrapper { flex: 1; display: flex; justify-content: center; align-items: center; background: var(--el-bg-color); }
+.content-body { padding: 20px; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.main-card { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--el-border-color-light); background: var(--el-bg-color); }
+.main-card :deep(.el-card__body) { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 20px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; }
+.header-left { display: flex; align-items: center; gap: 10px; }
+.title { font-size: 16px; font-weight: 600; color: var(--el-text-color-primary); }
+.status-tag .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background-color: #fff; margin-right: 4px; }
+.filter-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.custom-table { flex: 1; overflow: hidden; }
+.data-id-text { font-family: monospace; font-weight: 500; color: var(--el-text-color-primary); }
+.type-text { font-size: 12px; color: var(--el-text-color-secondary); text-transform: uppercase; }
+.pagination { margin-top: 15px; display: flex; justify-content: flex-end; }
+.form-row { display: flex; gap: 20px; }
+.code-editor :deep(.el-textarea__inner) { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 13px; line-height: 1.6; background-color: #f9f9f9; color: #333; }
+html.dark .code-editor :deep(.el-textarea__inner) { background-color: #1e1e1e; color: #d4d4d4; border-color: #4c4d4f; }
+.guide-text { margin-top: 10px; color: #666; font-size: 14px; }
 </style>
