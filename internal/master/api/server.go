@@ -157,6 +157,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		backupManager,
 		monitorStore,
 		sched,
+		cfg.Auth.SecretKey,
 	)
 
 	// 10. 启动 WebSocket Hub
@@ -264,6 +265,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/alerts/events/delete", h.DeleteEvent)
 	mux.HandleFunc("/api/alerts/events/clear", h.ClearEvents)
 
+	mux.HandleFunc("/api/login", h.HandleLogin)
 	// --- WebSocket ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 

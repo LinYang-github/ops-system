@@ -19,6 +19,7 @@ type ServerHandler struct {
 	backupMgr    *manager.BackupManager
 	monitorStore *monitor.MemoryTSDB
 	scheduler    *scheduler.Scheduler
+	secretKey    string
 }
 
 // NewServerHandler 构造函数
@@ -33,6 +34,7 @@ func NewServerHandler(
 	backup *manager.BackupManager,
 	monitor *monitor.MemoryTSDB,
 	scheduler *scheduler.Scheduler,
+	secretKey string,
 ) *ServerHandler {
 	return &ServerHandler{
 		sysMgr:       sys,
@@ -45,5 +47,6 @@ func NewServerHandler(
 		backupMgr:    backup,
 		monitorStore: monitor,
 		scheduler:    scheduler,
+		secretKey:    secretKey,
 	}
 }

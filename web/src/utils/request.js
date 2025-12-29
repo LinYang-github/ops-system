@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { getToken } from './auth' 
 
 // 1. 创建 axios 实例
 const service = axios.create({
@@ -13,13 +14,11 @@ const service = axios.create({
 // 2. 请求拦截器 (Request Interceptor)
 service.interceptors.request.use(
   config => {
-    // 可以在这里统一添加 Token
-    // const token = localStorage.getItem('token')
-    // if (token) {
-    //   config.headers['Authorization'] = 'Bearer ' + token
-    // }
-    const token = "ops-system-secret-key" 
-    config.headers['Authorization'] = 'Bearer ' + token
+    // 动态获取 Token
+    const token = getToken()
+    if (token) {
+      config.headers['Authorization'] = 'Bearer ' + token
+    }
     return config
   },
   error => {

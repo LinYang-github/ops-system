@@ -47,7 +47,7 @@ func setupHandler(t *testing.T) (*api.ServerHandler, *sql.DB) {
 	go ws.GlobalHub.Run()
 
 	// 4. 构造 Handler
-	h := api.NewServerHandler(sysMgr, instMgr, nil, logMgr, nil, nil, nil, nil, nil, nil)
+	h := api.NewServerHandler(sysMgr, instMgr, nil, logMgr, nil, nil, nil, nil, nil, nil, "")
 	return h, db
 }
 

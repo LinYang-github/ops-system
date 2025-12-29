@@ -29,7 +29,8 @@ func AuthMiddleware(secretKey string) func(http.Handler) http.Handler {
 				strings.HasPrefix(path, "/api/instance/logs/stream") ||
 				strings.HasPrefix(path, "/api/node/terminal") ||
 				// 【关键修复】放行本地直传接口
-				strings.HasPrefix(path, "/api/upload/direct") {
+				strings.HasPrefix(path, "/api/upload/direct") ||
+				strings.HasPrefix(path, "/api/login") {
 
 				next.ServeHTTP(w, r)
 				return
