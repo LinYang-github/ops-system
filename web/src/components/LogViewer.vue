@@ -5,168 +5,198 @@
     width="1000px" 
     :before-close="handleClose"
     top="5vh"
-    custom-class="log-dialog"
+    destroy-on-close
+    class="log-dialog"
   >
     <!-- 1. 顶部工具栏 -->
     <div class="log-toolbar">
-      <!-- 文件选择 -->
       <el-select v-model="currentFile" placeholder="选择日志文件" size="small" style="width: 180px" @change="connectWs">
         <el-option v-for="f in fileList" :key="f" :label="f" :value="f" />
       </el-select>
       
-      <!-- 搜索过滤 -->
+      <!-- 搜索框 (调用 xterm 搜索插件) -->
       <el-input 
-        v-model="filterKeyword" 
-        placeholder="关键字高亮/过滤..." 
+        v-model="searchKeyword" 
+        placeholder="搜索..." 
         size="small" 
         style="width: 200px" 
         clearable
-        prefix-icon="Search"
-      />
+        @input="handleSearch"
+        @keyup.enter="findNext"
+      >
+        <template #append>
+          <el-button :icon="Search" @click="findNext" />
+        </template>
+      </el-input>
 
-      <!-- 自动滚动开关 -->
       <el-checkbox v-model="autoScroll" size="small" border>自动滚动</el-checkbox>
 
       <div class="spacer"></div>
 
-      <!-- 状态指示 -->
       <div class="status-indicator">
         <span class="dot" :class="{ active: isConnected }"></span>
-        {{ isConnected ? '已连接' : '已断开' }}
+        {{ isConnected ? '实时' : '断开' }}
       </div>
       
       <el-button size="small" type="info" plain @click="clearLogs">清屏</el-button>
     </div>
 
-    <!-- 2. 日志内容区域 -->
-    <div class="log-container" ref="logContainer">
-      <!-- 使用 v-html 渲染经过处理的带颜色的 HTML -->
-      <!-- 增加 v-memo 优化性能，仅当行内容或关键词变化时重新渲染 -->
-      <div 
-        v-for="(line, i) in filteredLogs" 
-        :key="i" 
-        class="log-line"
-        :class="getLevelClass(line.text)"
-        v-html="formatLine(line.text)"
-      ></div>
-      
-      <div v-if="logs.length === 0" class="empty-tip">等待日志数据...</div>
-      
-      <!-- 底部锚点，用于自动滚动 -->
-      <div ref="bottomAnchor"></div>
+    <!-- 2. xterm 容器 -->
+    <div class="terminal-wrapper" v-loading="loading">
+      <div ref="terminalContainer" class="xterm-container"></div>
     </div>
   </el-dialog>
 </template>
 
 <script setup>
-import { ref, watch, nextTick, computed, onUnmounted } from 'vue'
-import request from '../utils/request'
+import { ref, watch, nextTick, onUnmounted } from 'vue'
+import axios from 'axios'
 import { Search } from '@element-plus/icons-vue'
+import { Terminal } from 'xterm'
+import { FitAddon } from 'xterm-addon-fit'
+import { SearchAddon } from 'xterm-addon-search'
+import 'xterm/css/xterm.css'
 
 const props = defineProps(['modelValue', 'instanceId', 'instanceName'])
 const emit = defineEmits(['update:modelValue'])
 
-// --- 状态 ---
+// 状态
 const visible = ref(false)
+const loading = ref(false)
 const fileList = ref([])
 const currentFile = ref('')
-const logs = ref([]) // 存储原始日志对象 { id: 1, text: "..." }
 const isConnected = ref(false)
 const autoScroll = ref(true)
-const filterKeyword = ref('')
+const searchKeyword = ref('')
 
-const logContainer = ref(null)
-const bottomAnchor = ref(null)
+const terminalContainer = ref(null)
+let term = null
 let socket = null
-let logIdCounter = 0
+let fitAddon = null
+let searchAddon = null
 
-// --- 监听打开 ---
 watch(() => props.modelValue, (val) => {
   visible.value = val
   if (val && props.instanceId) {
-    loadFiles()
+    // 弹窗动画结束后再初始化，防止尺寸计算错误
+    setTimeout(() => {
+      initTerminal()
+      loadFiles()
+    }, 100)
   } else {
     closeWs()
+    disposeTerminal()
   }
-})
-
-// --- 自动滚动逻辑 ---
-watch(() => logs.value.length, () => {
-  if (autoScroll.value) {
-    nextTick(() => {
-      bottomAnchor.value?.scrollIntoView({ behavior: "smooth" })
-    })
-  }
-})
-
-// --- 过滤逻辑 ---
-// 如果你希望“只显示匹配行”，使用这个 computed
-// 如果你希望“显示所有行但高亮匹配词”，则直接遍历 logs，filterKeyword 仅用于高亮
-// 这里采用：显示所有行 + 高亮
-const filteredLogs = computed(() => {
-  // 如果你想做过滤显示，可以在这里 filter
-  // return logs.value.filter(l => l.text.includes(filterKeyword.value))
-  return logs.value
 })
 
 const handleClose = () => {
   closeWs()
-  logs.value = []
+  disposeTerminal()
   emit('update:modelValue', false)
 }
 
-// 1. 获取文件列表
+// --- 核心：xterm 初始化 ---
+const initTerminal = () => {
+  if (term) return
+
+  term = new Terminal({
+    cursorBlink: false,
+    disableStdin: true, // 只读
+    fontSize: 13,
+    lineHeight: 1.4,
+    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    theme: {
+      background: '#1e1e1e',
+      foreground: '#d4d4d4',
+      selectionBackground: 'rgba(255, 255, 255, 0.3)'
+    },
+    scrollback: 10000, // 缓冲区保留 1万行，超出自动丢弃，极大优化内存
+    convertEol: true,  // 自动处理 \n 换行
+  })
+
+  // 加载插件
+  fitAddon = new FitAddon()
+  searchAddon = new SearchAddon()
+  term.loadAddon(fitAddon)
+  term.loadAddon(searchAddon)
+
+  term.open(terminalContainer.value)
+  fitAddon.fit()
+
+  // 监听滚动，如果用户手动向上滚，暂停自动滚动
+  term.onScroll(e => {
+    if (term.buffer.active.viewportY < term.buffer.active.baseY) {
+      autoScroll.value = false
+    } else {
+      autoScroll.value = true
+    }
+  })
+}
+
+const disposeTerminal = () => {
+  if (term) {
+    term.dispose()
+    term = null
+  }
+}
+
+// --- 业务逻辑 ---
+
 const loadFiles = async () => {
   try {
-    const res = await request.get(`/api/instance/logs/files?instance_id=${props.instanceId}`)
-    fileList.value = res.files || []
+    loading.value = true
+    const res = await axios.get(`/api/instance/logs/files?instance_id=${props.instanceId}`)
+    fileList.value = res.data.files || []
     if (fileList.value.length > 0) {
       currentFile.value = fileList.value[0]
       connectWs()
     }
   } catch (e) {
-    logs.value.push({ id: logIdCounter++, text: `[System] 获取文件列表失败: ${e.message}` })
+    term?.writeln(`\x1b[31m[System] 获取文件列表失败: ${e.message}\x1b[0m`)
+  } finally {
+    loading.value = false
   }
 }
 
-// 2. WebSocket 连接
 const connectWs = () => {
   closeWs()
-  logs.value = []
+  term?.clear()
   
   if (!currentFile.value) return
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.host
   const targetHost = import.meta.env.DEV ? 'localhost:8080' : host
-  
   const url = `${protocol}//${targetHost}/api/instance/logs/stream?instance_id=${props.instanceId}&log_key=${encodeURIComponent(currentFile.value)}`
   
   socket = new WebSocket(url)
 
   socket.onopen = () => {
     isConnected.value = true
-    logs.value.push({ id: logIdCounter++, text: `[System] 已连接至 ${currentFile.value}...` })
+    term?.writeln(`\x1b[32m[System] 已连接至 ${currentFile.value}...\x1b[0m`)
   }
 
   socket.onmessage = (event) => {
     const text = event.data
-    // 限制前端日志缓存行数 (防止内存溢出)
-    if (logs.value.length > 2000) {
-      logs.value.shift()
+    // 注入颜色 (Client-side Syntax Highlighting)
+    // 简单替换关键字为 ANSI 颜色码
+    const coloredText = colorizeLog(text)
+    
+    term?.write(coloredText)
+    
+    // 如果开启了自动滚动，且不在搜索模式下
+    if (autoScroll.value) {
+      term?.scrollToBottom()
     }
-    logs.value.push({ id: logIdCounter++, text: text })
   }
 
   socket.onclose = (e) => {
     isConnected.value = false
-    logs.value.push({ id: logIdCounter++, text: `[System] 连接断开 (Code: ${e.code})` })
-    // 断开时自动停止滚动，方便查看错误
-    autoScroll.value = false
+    term?.writeln(`\r\n\x1b[31m[System] 连接断开 (Code: ${e.code})\x1b[0m`)
   }
   
   socket.onerror = () => {
-    logs.value.push({ id: logIdCounter++, text: `[System] 连接发生错误` })
+    term?.writeln(`\r\n\x1b[31m[System] 连接错误\x1b[0m`)
   }
 }
 
@@ -178,47 +208,51 @@ const closeWs = () => {
   isConnected.value = false
 }
 
-const clearLogs = () => logs.value = []
+const clearLogs = () => term?.clear()
 
-// --- 样式处理核心逻辑 ---
-
-// 1. 获取行级样式 (整行变色)
-const getLevelClass = (text) => {
-  const t = text.toUpperCase()
-  if (t.includes('ERROR') || t.includes('FAIL') || t.includes('EXCEPTION')) return 'line-error'
-  if (t.includes('WARN')) return 'line-warn'
-  if (t.includes('INFO')) return 'line-info'
-  if (t.includes('DEBUG')) return 'line-debug'
-  return ''
-}
-
-// 2. 格式化行内容 (转义HTML + 关键字高亮)
-const formatLine = (text) => {
-  if (!text) return ''
-  
-  // XSS 防护：先转义 HTML 标签
-  let escaped = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;")
-
-  // 关键字高亮
-  if (filterKeyword.value) {
-    // 使用正则全局替换，忽略大小写
-    try {
-      const reg = new RegExp(`(${filterKeyword.value})`, 'gi')
-      escaped = escaped.replace(reg, '<mark class="highlight">$1</mark>')
-    } catch (e) {
-      // 防止正则语法错误 (如用户输入了 "[")
-    }
+// --- 搜索功能 ---
+const handleSearch = (val) => {
+  if (!val) {
+    searchAddon?.clearDecoration()
+    return
   }
-
-  return escaped
+  // 查找前一个/下一个
+  searchAddon?.findNext(val, {
+    decorations: {
+      matchBackground: '#f5c356',
+      matchBorder: '#b38600',
+      activeMatchBackground: '#ff0000',
+      activeMatchColor: '#ffffff'
+    }
+  })
 }
 
-onUnmounted(() => closeWs())
+const findNext = () => {
+  if(searchKeyword.value) {
+    searchAddon?.findNext(searchKeyword.value)
+  }
+}
+
+// --- 辅助：简单的日志着色器 ---
+const colorizeLog = (text) => {
+  // ERROR/FAIL -> 红
+  // WARN -> 黄
+  // INFO -> 绿/白
+  // 2023-xx-xx -> 蓝
+  
+  // 这种正则替换性能开销极低
+  return text
+    .replace(/(ERROR|FAIL|EXCEPTION)/ig, '\x1b[1;31m$1\x1b[0m')
+    .replace(/(WARN|WARNING)/ig, '\x1b[1;33m$1\x1b[0m')
+    .replace(/(INFO)/ig, '\x1b[1;32m$1\x1b[0m')
+    // 匹配时间戳简单高亮 (例如 20xx-xx-xx xx:xx:xx)
+    .replace(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/g, '\x1b[36m$1\x1b[0m')
+}
+
+onUnmounted(() => {
+  closeWs()
+  disposeTerminal()
+})
 </script>
 
 <style scoped>
@@ -227,8 +261,8 @@ onUnmounted(() => closeWs())
   align-items: center;
   gap: 12px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #333; /* 深色边框适配深色背景 */
-  background-color: #1e1e1e; /* 工具栏也用深色，或者用弹窗默认色 */
+  border-bottom: 1px solid #333;
+  background-color: #1e1e1e;
 }
 
 .spacer { flex: 1; }
@@ -244,46 +278,14 @@ onUnmounted(() => closeWs())
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #909399; }
 .dot.active { background: #67C23A; }
 
-/* 日志容器 */
-.log-container {
+.terminal-wrapper {
   height: 600px;
-  background-color: #1e1e1e; /* 终端黑 */
-  color: #d4d4d4;            /* 默认字色 */
-  padding: 15px;
-  overflow-y: auto;
-  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  border-radius: 0 0 4px 4px;
+  background-color: #1e1e1e;
+  padding: 5px; /* 给一点 padding 避免文字贴边 */
 }
 
-/* 滚动条美化 */
-.log-container::-webkit-scrollbar { width: 10px; background: #1e1e1e; }
-.log-container::-webkit-scrollbar-thumb { background: #444; border-radius: 5px; }
-.log-container::-webkit-scrollbar-thumb:hover { background: #555; }
-
-/* 日志行样式 */
-.log-line {
-  white-space: pre-wrap; /* 保留换行 */
-  word-break: break-all; /* 防止长单词撑开 */
-  border-bottom: 1px solid transparent; /* 占位防止抖动 */
+.xterm-container {
+  width: 100%;
+  height: 100%;
 }
-.log-line:hover { background-color: #2a2d2e; }
-
-/* 日志级别配色 (仿 JetBrains IDEA Console) */
-.line-error { color: #f56c6c; font-weight: bold; } /* 鲜红 */
-.line-warn  { color: #e6a23c; } /* 橙黄 */
-.line-info  { color: #a9b7c6; } /* 默认灰白 */
-.line-debug { color: #909399; } /* 深灰 */
-
-/* 关键字高亮 */
-:deep(.highlight) {
-  background-color: #ffe793;
-  color: #000;
-  font-weight: bold;
-  padding: 0 2px;
-  border-radius: 2px;
-}
-
-.empty-tip { color: #555; text-align: center; margin-top: 150px; }
 </style>
