@@ -28,7 +28,18 @@ func initTables(db *sql.DB) {
 		// 系统表
 		`CREATE TABLE IF NOT EXISTS system_infos (id TEXT PRIMARY KEY, name TEXT, description TEXT, create_time INTEGER);`,
 		// 模块表
-		`CREATE TABLE IF NOT EXISTS system_modules (id TEXT PRIMARY KEY, system_id TEXT, module_name TEXT, package_name TEXT, package_version TEXT, description TEXT);`,
+		`CREATE TABLE IF NOT EXISTS system_modules (
+			id TEXT PRIMARY KEY, 
+			system_id TEXT, 
+			module_name TEXT, 
+			package_name TEXT, 
+			package_version TEXT, 
+			description TEXT,
+			start_order INTEGER,
+			readiness_type TEXT, 
+			readiness_target TEXT,
+			readiness_timeout INTEGER
+		);`,
 		// 实例表
 		`CREATE TABLE IF NOT EXISTS instance_infos (id TEXT PRIMARY KEY, system_id TEXT, node_ip TEXT, service_name TEXT, service_version TEXT, status TEXT, pid INTEGER, uptime INTEGER);`,
 		// 日志表

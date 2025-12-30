@@ -14,7 +14,7 @@
         <el-option v-for="f in fileList" :key="f" :label="f" :value="f" />
       </el-select>
       
-      <!-- 搜索框 (调用 xterm 搜索插件) -->
+      <!-- 搜索框 -->
       <el-input 
         v-model="searchKeyword" 
         placeholder="搜索..." 
@@ -35,7 +35,7 @@
 
       <div class="status-indicator">
         <span class="dot" :class="{ active: isConnected }"></span>
-        {{ isConnected ? '实时' : '断开' }}
+        {{ isConnected ? '实时连通' : '连接断开' }}
       </div>
       
       <el-button size="small" type="info" plain @click="clearLogs">清屏</el-button>
@@ -50,7 +50,8 @@
 
 <script setup>
 import { ref, watch, nextTick, onUnmounted } from 'vue'
-import axios from 'axios'
+// 【修复点 1】使用封装的 request
+import request from '../utils/request'
 import { Search } from '@element-plus/icons-vue'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
@@ -78,7 +79,7 @@ let searchAddon = null
 watch(() => props.modelValue, (val) => {
   visible.value = val
   if (val && props.instanceId) {
-    // 弹窗动画结束后再初始化，防止尺寸计算错误
+    // 弹窗动画结束后再初始化
     setTimeout(() => {
       initTerminal()
       loadFiles()
@@ -95,7 +96,7 @@ const handleClose = () => {
   emit('update:modelValue', false)
 }
 
-// --- 核心：xterm 初始化 ---
+// --- xterm 初始化 ---
 const initTerminal = () => {
   if (term) return
 
@@ -110,11 +111,10 @@ const initTerminal = () => {
       foreground: '#d4d4d4',
       selectionBackground: 'rgba(255, 255, 255, 0.3)'
     },
-    scrollback: 10000, // 缓冲区保留 1万行，超出自动丢弃，极大优化内存
-    convertEol: true,  // 自动处理 \n 换行
+    scrollback: 10000,
+    convertEol: true,
   })
 
-  // 加载插件
   fitAddon = new FitAddon()
   searchAddon = new SearchAddon()
   term.loadAddon(fitAddon)
@@ -123,8 +123,8 @@ const initTerminal = () => {
   term.open(terminalContainer.value)
   fitAddon.fit()
 
-  // 监听滚动，如果用户手动向上滚，暂停自动滚动
   term.onScroll(e => {
+    // 简单的判断：如果不在底部，停止自动滚动
     if (term.buffer.active.viewportY < term.buffer.active.baseY) {
       autoScroll.value = false
     } else {
@@ -145,11 +145,17 @@ const disposeTerminal = () => {
 const loadFiles = async () => {
   try {
     loading.value = true
-    const res = await axios.get(`/api/instance/logs/files?instance_id=${props.instanceId}`)
-    fileList.value = res.data.files || []
+    // 【修复点 2】使用 request.get，返回的直接是 payload
+    const res = await request.get(`/api/instance/logs/files?instance_id=${props.instanceId}`)
+    
+    // request.js 已经解包了 code/msg，直接取 files
+    fileList.value = res.files || []
+    
     if (fileList.value.length > 0) {
       currentFile.value = fileList.value[0]
       connectWs()
+    } else {
+       term?.writeln('\x1b[33m[System] 该实例暂无日志文件\x1b[0m')
     }
   } catch (e) {
     term?.writeln(`\x1b[31m[System] 获取文件列表失败: ${e.message}\x1b[0m`)
@@ -166,9 +172,13 @@ const connectWs = () => {
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.host
+  // 适配开发环境端口转发
   const targetHost = import.meta.env.DEV ? 'localhost:8080' : host
+  
   const url = `${protocol}//${targetHost}/api/instance/logs/stream?instance_id=${props.instanceId}&log_key=${encodeURIComponent(currentFile.value)}`
   
+  console.log("Connecting WS:", url) // 调试日志
+
   socket = new WebSocket(url)
 
   socket.onopen = () => {
@@ -178,13 +188,17 @@ const connectWs = () => {
 
   socket.onmessage = (event) => {
     const text = event.data
-    // 注入颜色 (Client-side Syntax Highlighting)
-    // 简单替换关键字为 ANSI 颜色码
+    
+    // 1. 处理颜色
     const coloredText = colorizeLog(text)
     
-    term?.write(coloredText)
+    // 2. 【关键修复】使用 writeln 而不是 write
+    // writeln 会自动在末尾追加 \r\n，解决日志挤在一行的问题
+    if (term) {
+        term.writeln(coloredText)
+    }
     
-    // 如果开启了自动滚动，且不在搜索模式下
+    // 3. 自动滚动
     if (autoScroll.value) {
       term?.scrollToBottom()
     }
@@ -192,7 +206,12 @@ const connectWs = () => {
 
   socket.onclose = (e) => {
     isConnected.value = false
-    term?.writeln(`\r\n\x1b[31m[System] 连接断开 (Code: ${e.code})\x1b[0m`)
+    // 1000 是正常关闭，其他是非正常
+    if (e.code !== 1000) {
+        term?.writeln(`\r\n\x1b[31m[System] 连接断开 (Code: ${e.code})，请检查后端日志\x1b[0m`)
+    } else {
+        term?.writeln(`\r\n\x1b[33m[System] 连接关闭\x1b[0m`)
+    }
   }
   
   socket.onerror = () => {
@@ -210,13 +229,12 @@ const closeWs = () => {
 
 const clearLogs = () => term?.clear()
 
-// --- 搜索功能 ---
+// --- 搜索 ---
 const handleSearch = (val) => {
   if (!val) {
     searchAddon?.clearDecoration()
     return
   }
-  // 查找前一个/下一个
   searchAddon?.findNext(val, {
     decorations: {
       matchBackground: '#f5c356',
@@ -233,19 +251,12 @@ const findNext = () => {
   }
 }
 
-// --- 辅助：简单的日志着色器 ---
+// --- 辅助：日志着色 ---
 const colorizeLog = (text) => {
-  // ERROR/FAIL -> 红
-  // WARN -> 黄
-  // INFO -> 绿/白
-  // 2023-xx-xx -> 蓝
-  
-  // 这种正则替换性能开销极低
   return text
     .replace(/(ERROR|FAIL|EXCEPTION)/ig, '\x1b[1;31m$1\x1b[0m')
     .replace(/(WARN|WARNING)/ig, '\x1b[1;33m$1\x1b[0m')
     .replace(/(INFO)/ig, '\x1b[1;32m$1\x1b[0m')
-    // 匹配时间戳简单高亮 (例如 20xx-xx-xx xx:xx:xx)
     .replace(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/g, '\x1b[36m$1\x1b[0m')
 }
 
@@ -281,7 +292,7 @@ onUnmounted(() => {
 .terminal-wrapper {
   height: 600px;
   background-color: #1e1e1e;
-  padding: 5px; /* 给一点 padding 避免文字贴边 */
+  padding: 5px;
 }
 
 .xterm-container {

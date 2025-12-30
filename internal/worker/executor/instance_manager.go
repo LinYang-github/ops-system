@@ -182,6 +182,34 @@ func DeployInstance(req protocol.DeployRequest) error {
 	if err := unzip(cachedZipPath, workDir); err != nil {
 		return fmt.Errorf("unzip failed: %v", err)
 	}
+
+	// 【新增】配置覆写逻辑
+	// 如果 Master 下发了 Readiness 配置，我们需要更新解压出来的 service.json
+	if req.ReadinessType != "" {
+		manifestPath := filepath.Join(workDir, "service.json")
+
+		// 1. 读取现有文件
+		m, err := readManifest(workDir)
+		if err != nil {
+			log.Printf("[Deploy] Warning: service.json read failed: %v", err)
+		} else {
+			// 2. 覆盖字段
+			m.ReadinessType = req.ReadinessType
+			m.ReadinessTarget = req.ReadinessTarget
+			m.ReadinessTimeout = req.ReadinessTimeout
+
+			// 3. 写回文件
+			file, err := os.Create(manifestPath)
+			if err == nil {
+				encoder := json.NewEncoder(file)
+				encoder.SetIndent("", "  ")
+				encoder.Encode(m)
+				file.Close()
+				log.Printf("[Deploy] Updated readiness config in service.json")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -253,20 +281,26 @@ func HandleAction(req protocol.InstanceActionRequest) error {
 	return nil
 }
 
+// StartProcess 启动进程 (包含就绪检测)
 func StartProcess(workDir string) StartProcessResult {
+	// 1. 读取配置
 	m, err := readManifest(workDir)
 	if err != nil {
 		return StartProcessResult{Status: "error", Error: err}
 	}
+
+	// 2. 检查运行状态 (防止重复启动)
 	if isRunning(workDir) {
 		pid := getPID(workDir)
 		return StartProcessResult{Status: "running", PID: pid, Uptime: time.Now().Unix(), Error: nil}
 	}
 
+	// 3. 路径与环境准备
 	execDir := workDir
 	if m.IsExternal {
 		execDir = m.ExternalWorkDir
 	}
+
 	cmdPath := m.Entrypoint
 	if !filepath.IsAbs(cmdPath) {
 		cmdPath = filepath.Join(execDir, m.Entrypoint)
@@ -279,31 +313,38 @@ func StartProcess(workDir string) StartProcessResult {
 
 	log.Printf("[Start] Executing: %s (CWD: %s)", absEntrypoint, execDir)
 
+	// 4. 构建命令
 	cmd := exec.Command(absEntrypoint, m.Args...)
 	cmd.Dir = execDir
 	cmd.Env = buildEnv(m.Env)
 
+	// 日志重定向
 	logFile, _ := os.Create(filepath.Join(workDir, "app.log"))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
-	// 【平台钩子】启动前准备 (Windows: CreationFlags, Unix: Setsid)
+	// 【平台钩子】启动前准备 (Setsid / CreationFlags)
 	prepareProcess(cmd)
 
+	// 5. 执行启动
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return StartProcessResult{Status: "error", Error: fmt.Errorf("start failed: %v", err)}
 	}
 
-	// 【平台钩子】启动后关联 (Windows: Job Object, Unix: No-op)
+	// 【平台钩子】关联 Job Object
 	instID := filepath.Base(workDir)
 	if err := attachProcessToManager(instID, cmd.Process.Pid); err != nil {
 		log.Printf("[Warn] Attach to job failed: %v", err)
 	}
 
 	var targetPID int
+
+	// 6. 获取目标 PID (Spawn vs Match)
 	if m.IsExternal && m.PidStrategy == "match" {
-		cmd.Wait()
+		cmd.Wait() // 等待启动脚本结束
+
+		// 轮询查找目标进程
 		for i := 0; i < 5; i++ {
 			time.Sleep(500 * time.Millisecond)
 			pid, err := findProcessPID(m.ProcessName, m.ExternalWorkDir)
@@ -313,23 +354,44 @@ func StartProcess(workDir string) StartProcessResult {
 			}
 		}
 		if targetPID == 0 {
-			return StartProcessResult{Status: "error", Error: fmt.Errorf("match failed for: %s", m.ProcessName)}
+			return StartProcessResult{Status: "error", Error: fmt.Errorf("process match failed for: %s", m.ProcessName)}
 		}
 	} else {
+		// Spawn 模式
 		targetPID = cmd.Process.Pid
-		go cmd.Wait()
+		go cmd.Wait() // 异步等待防止僵尸进程
 	}
 
+	// 写入 PID 文件
 	os.WriteFile(filepath.Join(workDir, "pid"), []byte(strconv.Itoa(targetPID)), 0644)
+
+	// 7. 【核心新增】就绪检测 (Readiness Probe)
+	// 进程虽然起来了，但服务可能还没准备好 (e.g. Nacos 初始化中)
+	if m.ReadinessType != "" && m.ReadinessType != "none" {
+		log.Printf("[Start] Waiting for readiness (%s -> %s)...", m.ReadinessType, m.ReadinessTarget)
+
+		if err := waitReady(m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout); err != nil {
+			// 检测失败，视为启动失败
+			// 策略选择：你可以选择这里 kill 进程，或者保留进程但返回 error 让用户处理
+			// 这里我们返回 error，前端会显示红色状态，用户可以查看日志判断
+			return StartProcessResult{
+				Status: "error",
+				PID:    targetPID,
+				Uptime: time.Now().Unix(),
+				Error:  fmt.Errorf("readiness probe failed: %v", err),
+			}
+		}
+		log.Printf("[Start] Service ready.")
+	}
+
 	return StartProcessResult{Status: "running", PID: targetPID, Uptime: time.Now().Unix()}
 }
 
-// StopProcess 停止进程 (核心修改)
+// StopProcess 停止进程
 func StopProcess(workDir string) (status string, pid int, err error) {
 	m, err := readManifest(workDir)
-	instID := filepath.Base(workDir)
 
-	// 1. 读取 PID (这是新逻辑的关键，跨平台都需要 PID)
+	// 1. 读取 PID
 	pidPath := filepath.Join(workDir, "pid")
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
@@ -338,9 +400,8 @@ func StopProcess(workDir string) (status string, pid int, err error) {
 	}
 	targetPID, _ := strconv.Atoi(string(data))
 
-	// 2. 自定义停止命令 (优先)
+	// 2. 优先执行自定义停止命令
 	if m != nil && m.StopEntrypoint != "" {
-		// ... 自定义停止逻辑保持不变 ...
 		execDir := workDir
 		if m.IsExternal {
 			execDir = m.ExternalWorkDir
@@ -349,32 +410,60 @@ func StopProcess(workDir string) (status string, pid int, err error) {
 		if !filepath.IsAbs(cmdPath) {
 			cmdPath = filepath.Join(execDir, cmdPath)
 		}
-		absStop, _ := resolveExecutable(cmdPath)
-		if absStop != "" {
+
+		// 尝试解析并执行
+		if absStop, resolveErr := resolveExecutable(cmdPath); resolveErr == nil {
 			cmd := exec.Command(absStop, m.StopArgs...)
 			cmd.Dir = execDir
 			cmd.Env = buildEnv(m.Env)
-			cmd.Run()
-		}
-	}
-
-	// 3. 强制终止逻辑 (平台特定)
-	// 【关键修改】调用平台特定的杀进程树函数
-	if targetPID > 0 {
-		if err := killProcessTree(targetPID, instID); err != nil {
-			log.Printf("[Stop] killProcessTree failed: %v", err)
-			// 如果进程树杀失败，尝试保底的单进程 Kill
-			if proc, err := os.FindProcess(targetPID); err == nil {
-				proc.Kill()
+			// 执行停止脚本，如果有错只打印日志，继续执行强制杀进程作为保底
+			if out, runErr := cmd.CombinedOutput(); runErr != nil {
+				log.Printf("[Stop] Custom stop command failed: %v, output: %s", runErr, string(out))
+			} else {
+				log.Printf("[Stop] Custom command executed successfully")
 			}
 		}
 	}
 
+	// 3. 强制终止逻辑 (平台特定)
+	// 【关键修改】如果 Kill 失败，必须返回错误，而不是吞掉
+	if targetPID > 0 {
+		// 获取实例 ID 用于 Windows Job Object，Linux 下其实用不到
+		instID := filepath.Base(workDir)
+
+		if err := killProcessTree(targetPID, instID); err != nil {
+			// 如果是 "进程不存在" 错误，我们认为这是成功的
+			if !isProcessNotFoundError(err) {
+				return "error", targetPID, fmt.Errorf("kill process failed: %v", err)
+			}
+		}
+	}
+
+	// 4. 清理残留
 	os.Remove(pidPath)
 	return "stopped", 0, nil
 }
 
-// 辅助函数 (保持不变) ...
+// 辅助函数：判断错误是否为“进程不存在”
+func isProcessNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Unix: ESRCH (no such process)
+	if strings.Contains(err.Error(), "no such process") {
+		return true
+	}
+	// Windows: specific error text
+	if strings.Contains(err.Error(), "element not found") { // Win32 ERROR_NOT_FOUND
+		return true
+	}
+	// Go os.FindProcess 某些情况的返回
+	if strings.Contains(err.Error(), "process already finished") {
+		return true
+	}
+	return false
+}
+
 func readManifest(workDir string) (*protocol.ServiceManifest, error) {
 	f, err := os.Open(filepath.Join(workDir, "service.json"))
 	if err != nil {

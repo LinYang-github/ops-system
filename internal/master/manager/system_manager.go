@@ -46,12 +46,40 @@ func (sm *SystemManager) DeleteSystem(systemID string, im *InstanceManager) erro
 }
 
 // AddModule 添加模块
-func (sm *SystemManager) AddModule(sysID, name, pkgName, pkgVer, desc string) error {
+func (sm *SystemManager) AddModule(m protocol.SystemModule) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
 	id := fmt.Sprintf("mod-%d", time.Now().UnixNano())
-	_, err := sm.db.Exec(`INSERT INTO system_modules VALUES (?, ?, ?, ?, ?, ?)`, id, sysID, name, pkgName, pkgVer, desc)
+	query := `INSERT INTO system_modules 
+	(id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout) 
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	_, err := sm.db.Exec(query,
+		id, m.SystemID, m.ModuleName, m.PackageName, m.PackageVersion, m.Description,
+		m.StartOrder, m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout,
+	)
 	return err
+}
+
+// 顺便增加一个 GetModule 用于部署时查询配置
+func (sm *SystemManager) GetModule(systemID, pkgName, pkgVer string) (*protocol.SystemModule, error) {
+	var m protocol.SystemModule
+	// 这里假设同一个系统下，同一个包名版本组合只有一个模块定义
+	// 实际场景最好用 ModuleID 查，但目前 DeployInstance 传参没带 ModuleID
+	// 暂时用 3 个字段匹配
+	query := `SELECT id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout 
+	          FROM system_modules 
+			  WHERE system_id = ? AND package_name = ? AND package_version = ? LIMIT 1`
+
+	err := sm.db.QueryRow(query, systemID, pkgName, pkgVer).Scan(
+		&m.ID, &m.SystemID, &m.ModuleName, &m.PackageName, &m.PackageVersion, &m.Description,
+		&m.StartOrder, &m.ReadinessType, &m.ReadinessTarget, &m.ReadinessTimeout,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // DeleteModule 删除模块
@@ -74,13 +102,25 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 		systems = append(systems, s)
 	}
 
-	// 2. 获取所有模块
-	modRows, _ := sm.db.Query(`SELECT id, system_id, module_name, package_name, package_version, description FROM system_modules`)
+	// 2. Modules
+	// 增加新列查询
+	modRows, _ := sm.db.Query(`SELECT id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout FROM system_modules`)
 	defer modRows.Close()
+
 	modMap := make(map[string][]*protocol.SystemModule)
 	for modRows.Next() {
 		var m protocol.SystemModule
-		modRows.Scan(&m.ID, &m.SystemID, &m.ModuleName, &m.PackageName, &m.PackageVersion, &m.Description)
+		// Scan 所有字段 (注意处理 NULL，这里简化假设存入时有默认值或空串)
+		// 如果数据库里可能有 NULL，可以使用 sql.NullString 扫描后再赋值
+		var rType, rTarget sql.NullString
+		var rTimeout sql.NullInt64
+
+		modRows.Scan(&m.ID, &m.SystemID, &m.ModuleName, &m.PackageName, &m.PackageVersion, &m.Description, &m.StartOrder, &rType, &rTarget, &rTimeout)
+
+		m.ReadinessType = rType.String
+		m.ReadinessTarget = rTarget.String
+		m.ReadinessTimeout = int(rTimeout.Int64)
+
 		val := m
 		modMap[m.SystemID] = append(modMap[m.SystemID], &val)
 	}

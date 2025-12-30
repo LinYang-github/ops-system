@@ -60,13 +60,13 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	var targetNodeIP string
 
 	// ==========================================
-	// 【新增】调度逻辑
+	// 1. 调度逻辑 (自动选择节点)
 	// ==========================================
 	if req.NodeIP == "auto" {
-		// 1. 获取所有节点数据的快照 (包含实时 CPU/Mem)
+		// 获取所有节点数据的快照 (包含实时 CPU/Mem)
 		allNodes := h.nodeMgr.GetAllNodes()
 
-		// 2. 调度算法选择
+		// 调度算法选择
 		selectedIP, found := h.scheduler.SelectBestNode(allNodes)
 		if !found {
 			response.Error(w, e.New(code.NodeOffline, "自动调度失败: 无可用在线节点", nil))
@@ -77,14 +77,52 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		targetNodeIP = req.NodeIP
 	}
 
-	// 1. 检查节点
+	// ==========================================
+	// 2. 检查节点状态
+	// ==========================================
 	node, exists := h.nodeMgr.GetNode(targetNodeIP)
 	if !exists {
 		response.Error(w, e.New(code.NodeOffline, "目标节点不在线", nil))
 		return
 	}
 
-	// 2. 获取下载链接 (使用 pkgMgr)
+	// ==========================================
+	// 3. 配置融合 (核心逻辑)
+	//    优先级: SystemModule (编排设置) > ServiceManifest (包默认值)
+	// ==========================================
+
+	// 3.1 获取服务包默认配置
+	manifest, err := h.pkgMgr.GetManifest(req.ServiceName, req.ServiceVersion)
+	if err != nil {
+		response.Error(w, e.New(code.PackageNotFound, "找不到服务包定义", err))
+		return
+	}
+
+	// 3.2 获取系统模块覆盖配置 (可能为空)
+	moduleCfg, _ := h.sysMgr.GetModule(req.SystemID, req.ServiceName, req.ServiceVersion)
+
+	// 3.3 融合逻辑
+	finalType := manifest.ReadinessType
+	finalTarget := manifest.ReadinessTarget
+	finalTimeout := manifest.ReadinessTimeout
+
+	if moduleCfg != nil {
+		if moduleCfg.ReadinessType != "" {
+			finalType = moduleCfg.ReadinessType
+		}
+		if moduleCfg.ReadinessTarget != "" {
+			finalTarget = moduleCfg.ReadinessTarget
+		}
+		if moduleCfg.ReadinessTimeout > 0 {
+			finalTimeout = moduleCfg.ReadinessTimeout
+		}
+	}
+
+	// ==========================================
+	// 4. 准备资源与入库
+	// ==========================================
+
+	// 获取下载链接
 	downloadURL, err := h.pkgMgr.GetDownloadURL(req.ServiceName, req.ServiceVersion, r.Host)
 	if err != nil {
 		response.Error(w, e.New(code.PackageNotFound, "生成下载链接失败", err))
@@ -93,7 +131,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 
 	instanceID := fmt.Sprintf("inst-%d", time.Now().UnixNano())
 
-	// 3. 预先入库 (状态为 deploying)
+	// 预先入库 (状态为 deploying)
 	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID:             instanceID,
 		SystemID:       req.SystemID,
@@ -106,18 +144,26 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	// 触发广播
 	h.broadcastUpdate()
 
-	// 4. 构造 Worker 请求
+	// ==========================================
+	// 5. 下发指令给 Worker
+	// ==========================================
+
 	workerReq := protocol.DeployRequest{
 		InstanceID:  instanceID,
 		SystemName:  req.SystemID,
 		ServiceName: req.ServiceName,
 		Version:     req.ServiceVersion,
 		DownloadURL: downloadURL,
+		// 将融合后的健康检查配置下发给 Worker
+		ReadinessType:    finalType,
+		ReadinessTarget:  finalTarget,
+		ReadinessTimeout: finalTimeout,
 	}
+
 	reqBody, _ := json.Marshal(workerReq)
 	targetURL := fmt.Sprintf("http://%s:%d/api/deploy", targetNodeIP, node.Port)
 
-	// 5. 发送请求 (Worker 异步处理)
+	// 发送请求 (Worker 异步处理)
 	if err := utils.PostJSON(targetURL, reqBody); err != nil {
 		// 失败回滚状态
 		h.instMgr.UpdateInstanceStatus(instanceID, "error", 0)
@@ -129,7 +175,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 记录日志
+	// 记录成功日志
 	logDetail := fmt.Sprintf("Node: %s, Ver: %s, ID: %s", targetNodeIP, req.ServiceVersion, instanceID)
 	h.logMgr.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, logDetail, "success")
 

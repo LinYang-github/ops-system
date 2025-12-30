@@ -86,6 +86,18 @@ type ServiceManifest struct {
 
 	Description string `json:"description"` // 描述
 	OS          string `json:"os"`          // 适用系统
+
+	// 就绪检测类型: "tcp", "http", "time", "none"
+	ReadinessType string `json:"readiness_type"`
+
+	// 检测目标:
+	// type="tcp" -> ":8848"
+	// type="http" -> "http://localhost:8080/health"
+	// type="time" -> "30" (秒)
+	ReadinessTarget string `json:"readiness_target"`
+
+	// 检测超时时间 (秒)，超过这个时间还没就绪则视为启动失败
+	ReadinessTimeout int `json:"readiness_timeout"`
 }
 
 // PackageInfo 用于前端展示的服务包列表信息
@@ -150,6 +162,12 @@ type SystemModule struct {
 	PackageName    string `json:"package_name"`
 	PackageVersion string `json:"package_version"`
 	Description    string `json:"description"`
+
+	// 【新增】编排与覆盖配置
+	StartOrder       int    `json:"start_order"`    // 启动顺序 (1, 2, 3...)
+	ReadinessType    string `json:"readiness_type"` // 覆盖默认值
+	ReadinessTarget  string `json:"readiness_target"`
+	ReadinessTimeout int    `json:"readiness_timeout"`
 }
 
 // SystemView 聚合视图 (用于前端展示)
@@ -169,6 +187,11 @@ type DeployRequest struct {
 	Entrypoint  string            `json:"entrypoint"`
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env"`
+
+	// 【新增】运行时配置 (Worker 需要把这些存下来，供 StartProcess 使用)
+	ReadinessType    string `json:"readiness_type"`
+	ReadinessTarget  string `json:"readiness_target"`
+	ReadinessTimeout int    `json:"readiness_timeout"`
 }
 
 // InstanceActionRequest 实例控制请求 (Master -> Worker)

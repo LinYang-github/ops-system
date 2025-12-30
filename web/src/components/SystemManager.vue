@@ -79,6 +79,7 @@
                 <div class="cell-content">
                   <!-- 组件行 -->
                   <template v-if="scope.row.rowType === 'module'">
+                    <el-tag size="small" effect="dark" style="margin-right: 8px">{{ scope.row.start_order }}</el-tag>
                     <span class="module-name">{{ scope.row.module_name }}</span>
                     <span class="instance-count" v-if="scope.row.children.length > 0">({{ scope.row.children.length }})</span>
                     
@@ -200,21 +201,61 @@
     </div>
 
     <!-- 弹窗1：添加标准组件 -->
-    <el-dialog v-model="addModDialog.visible" title="添加标准组件" width="350px">
-        <el-form label-width="70px" size="small">
-            <el-form-item label="名称"><el-input v-model="addModDialog.moduleName" /></el-form-item>
-            <el-form-item label="服务包">
-                <el-select v-model="addModDialog.selectedPkg" @change="updateModVersions" style="width:100%">
-                    <el-option v-for="p in packages" :key="p.name" :label="p.name" :value="p" />
-                </el-select>
+    <el-dialog v-model="addModDialog.visible" title="添加服务组件" width="600px">
+      <el-form label-width="100px" :model="addModDialog" size="small">
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="组件名称">
+              <el-input v-model="addModDialog.moduleName" placeholder="例如: 核心API" />
             </el-form-item>
-            <el-form-item label="版本">
-                <el-select v-model="addModDialog.version" style="width:100%">
-                    <el-option v-for="v in addModDialog.versions" :key="v" :label="v" :value="v" />
-                </el-select>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="启动顺序">
+               <el-input-number v-model="addModDialog.startOrder" :min="1" :max="99" />
+               <div style="font-size:12px; color:#999">越小越先启动</div>
             </el-form-item>
-        </el-form>
-        <template #footer><el-button type="primary" size="small" @click="addModule">确定</el-button></template>
+          </el-col>
+        </el-row>
+
+        <el-form-item label="服务包">
+           <el-select v-model="addModDialog.selectedPkg" @change="updateModVersions" style="width:100%">
+             <el-option v-for="p in packages" :key="p.name" :label="p.name" :value="p" />
+           </el-select>
+        </el-form-item>
+        <el-form-item label="版本">
+           <el-select v-model="addModDialog.version" style="width:100%">
+             <el-option v-for="v in addModDialog.versions" :key="v" :label="v" :value="v" />
+           </el-select>
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="addModDialog.desc" placeholder="备注信息" />
+        </el-form-item>
+
+        <el-divider content-position="left">健康检查覆盖 (可选)</el-divider>
+        <div style="margin-bottom: 10px; color: #999; font-size: 12px; padding-left: 20px;">
+          若不填写，将使用服务包中 service.json 的默认配置。
+        </div>
+
+        <el-row :gutter="20">
+          <el-col :span="8">
+            <el-form-item label="检测类型">
+               <el-select v-model="addModDialog.readinessType" clearable placeholder="默认">
+                 <el-option label="TCP端口" value="tcp" />
+                 <el-option label="HTTP请求" value="http" />
+                 <el-option label="固定延时" value="time" />
+               </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="16">
+            <el-form-item label="检测目标">
+               <el-input v-model="addModDialog.readinessTarget" placeholder="e.g. :8080 or /health" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" @click="addModule">确定</el-button>
+      </template>
     </el-dialog>
 
     <!-- 弹窗2：部署实例 -->
@@ -310,7 +351,12 @@ const batchLoading = ref(false)
 const fullData = ref([])
 const packages = ref([])
 
-const addModDialog = reactive({ visible: false, moduleName: '', selectedPkg: null, version: '', versions: [] })
+const addModDialog = reactive({
+  visible: false, 
+  moduleName: '', selectedPkg: null, version: '', versions: [], desc: '', 
+  startOrder: 1, 
+  readinessType: '', readinessTarget: ''
+})
 const deployDialog = reactive({ visible: false, targetModule: null, nodeIP: '', loading: false })
 const adoptDialog = reactive({ visible: false, loading: false })
 const adoptForm = reactive({ name: '', nodeIP: '', workDir: '', startCmd: '', stopCmd: '', pidStrategy: 'spawn', processName: '' })
@@ -446,7 +492,22 @@ const handleInstanceCommand = (cmd, id) => {
 // 模组 & 部署 & 纳管
 const openAddModuleDialog = async () => { addModDialog.visible = true; const res = await request.get('/api/packages'); packages.value = res || [] }
 const updateModVersions = () => { if(addModDialog.selectedPkg) addModDialog.versions = addModDialog.selectedPkg.versions; addModDialog.version = addModDialog.versions[0]; if(!addModDialog.moduleName) addModDialog.moduleName = addModDialog.selectedPkg.name }
-const addModule = async () => { await request.post('/api/systems/module/add', { system_id: currentSystem.value.id, module_name: addModDialog.moduleName, package_name: addModDialog.selectedPkg.name, package_version: addModDialog.version }); addModDialog.visible = false; refreshData() }
+const addModule = async () => {
+  await request.post('/api/systems/module/add', {
+    system_id: currentSystem.value.id,
+    module_name: addModDialog.moduleName,
+    package_name: addModDialog.selectedPkg.name,
+    package_version: addModDialog.version,
+    description: addModDialog.desc,
+    // 新增字段
+    start_order: addModDialog.startOrder,
+    readiness_type: addModDialog.readinessType,
+    readiness_target: addModDialog.readinessTarget,
+    readiness_timeout: 30 // 默认 30s
+  })
+  addModDialog.visible = false
+  refreshData()
+}
 const deleteModule = async (id) => { await request.post('/api/systems/module/delete', { id }); refreshData() }
 
 // 部署

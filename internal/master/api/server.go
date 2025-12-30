@@ -54,16 +54,15 @@ type ServerConfig struct {
 
 // StartMasterServer 启动 Master HTTP 服务
 func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
-	// 保存上传路径供 FileServer 使用
 	uploadPath = cfg.Storage.UploadDir
 
 	// 1. 初始化数据库
 	database := db.InitDB(cfg.Server.DBPath)
 
-	// 2. 初始化监控存储 (内存 TSDB)
+	// 2. 初始化监控存储
 	monitorStore = monitor.NewMemoryTSDB()
 
-	// 3. 初始化文件存储 Provider (Local 或 MinIO)
+	// 3. 初始化文件存储 Provider
 	var storeProvider storage.Provider
 	var err error
 
@@ -85,26 +84,24 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		return fmt.Errorf("init storage failed: %v", err)
 	}
 
-	// 4. 初始化全局 HTTP Client (使用配置中的超时和密钥)
+	// 4. 初始化基础环境 (使用启动参数作为初始值)
 	utils.InitHTTPClient(cfg.Logic.HTTPClientTimeout, cfg.Auth.SecretKey)
 
-	// 5. 初始化所有 Manager (依赖注入顺序很重要)
-	// 底层依赖先初始化
+	// 5. 初始化所有 Manager (单次实例化，依赖注入)
 	logManager = manager.NewLogManager(database)
 	sysManager = manager.NewSystemManager(database)
 	instManager = manager.NewInstanceManager(database)
-	pkgManager = manager.NewPackageManager(database, storeProvider)
+	pkgManager = manager.NewPackageManager(database, storeProvider) // 传入 DB 和 Storage
 	configManager = manager.NewConfigManager(database)
 	backupManager = manager.NewBackupManager(database, cfg.Storage.UploadDir)
 
-	// NodeManager 初始使用默认阈值，稍后会尝试加载动态配置覆盖
+	// 初始 NodeManager (使用 CLI/Config 中的默认阈值)
 	nodeManager = manager.NewNodeManager(database, monitorStore, cfg.Logic.NodeOfflineThreshold)
 
-	// AlertManager 依赖 Node 和 Instance Manager
+	// AlertManager 依赖上述已创建的实例
 	alertManager = manager.NewAlertManager(database, nodeManager, instManager)
 
-	// 6. 加载动态配置 (热更新机制)
-	// 尝试从数据库加载上次保存的配置，覆盖内存中的状态
+	// 6. 尝试加载动态配置 (热更新覆盖)
 	if globalCfg, err := configManager.GetGlobalConfig(); err == nil {
 		log.Printf("Loaded dynamic config from DB, applying updates...")
 
@@ -113,11 +110,12 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 			utils.SetTimeout(time.Duration(globalCfg.Logic.HTTPClientTimeout) * time.Second)
 		}
 
-		// 更新 NodeManager 阈值 (使用 Set 方法而不是重新 New)
+		// 更新 NodeManager 阈值 (仅修改内部状态，不重新创建实例)
 		if globalCfg.Logic.NodeOfflineThreshold > 0 {
 			nodeManager.SetOfflineThreshold(time.Duration(globalCfg.Logic.NodeOfflineThreshold) * time.Second)
 		}
 	} else {
+		// 如果 DB 没配置，就保持步骤 4 和 5 中的默认状态，不需要做任何事
 		log.Printf("No dynamic config in DB, using startup flags/defaults.")
 	}
 
@@ -129,11 +127,9 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 			logManager.CleanupOldLogs(currentCfg.Log.RetentionDays)
 		}
 
-		// 每天执行一次
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			// 每次执行时重新读取最新配置
 			cfg, err := configManager.GetGlobalConfig()
 			if err == nil {
 				logManager.CleanupOldLogs(cfg.Log.RetentionDays)
@@ -145,7 +141,6 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	sched := scheduler.NewScheduler()
 
 	// 9. 初始化全局 Handler 容器
-	// 将所有 Manager 注入到 Handler 中，实现解耦
 	serverHandler := NewServerHandler(
 		sysManager,
 		instManager,
@@ -157,7 +152,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		backupManager,
 		monitorStore,
 		sched,
-		cfg.Auth.SecretKey,
+		cfg.Auth.SecretKey, // 传入 Secret 用于登录接口
 	)
 
 	// 10. 启动 WebSocket Hub
@@ -169,11 +164,16 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 
 	log.Printf("Master UI & API running on %s", cfg.Server.Port)
 
-	// 1. 先应用鉴权 (Auth)
-	var handler http.Handler = middleware.AuthMiddleware(cfg.Auth.SecretKey)(mux)
+	// =========================================================
+	// 中间件链式组装
+	// =========================================================
 
-	// 2. 再应用超时 (Timeout)
-	// 读取配置中的超时时间，如果配置为0或负数，则不启用超时
+	var handler http.Handler = mux
+
+	// 1. 鉴权中间件 (Auth)
+	handler = middleware.AuthMiddleware(cfg.Auth.SecretKey)(handler)
+
+	// 2. 超时中间件 (Timeout)
 	if cfg.Server.APITimeout > 0 {
 		timeoutDuration := time.Duration(cfg.Server.APITimeout) * time.Second
 		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
@@ -181,8 +181,8 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 
 	server := &http.Server{
 		Addr:         cfg.Server.Port,
-		Handler:      handler, // 使用包装后的 Handler
-		ReadTimeout:  0,       // 必须为 0 以支持大文件上传和 WebSocket
+		Handler:      handler,
+		ReadTimeout:  0, // 必须为 0 以支持大文件上传和 WebSocket
 		WriteTimeout: 0,
 	}
 

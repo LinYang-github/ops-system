@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,10 @@ import (
 // timeout: 超时时长
 func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
+		// 【新增】启动时检查：防止传入 nil handler 导致运行时 Panic
+		if next == nil {
+			log.Fatal("❌ [TimeoutMiddleware] Setup Error: 'next' handler is nil! Check your server.go middleware chaining.")
+		}
 		// 使用标准库的 TimeoutHandler
 		// 当超时发生时，返回 503 Service Unavailable 和指定消息
 		timeoutHandler := http.TimeoutHandler(next, timeout, `{"code": 504, "msg": "request timeout"}`)

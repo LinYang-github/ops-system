@@ -7,6 +7,9 @@ import (
 
 	"ops-system/internal/master/ws"
 
+	"ops-system/pkg/code"
+	"ops-system/pkg/e"
+	"ops-system/pkg/protocol"
 	"ops-system/pkg/response"
 	"ops-system/pkg/utils"
 )
@@ -65,29 +68,33 @@ func (h *ServerHandler) DeleteSystem(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, nil)
 }
 
-// handleCreateSystemModule 添加服务定义
+// CreateSystemModule 添加服务定义
+// POST /api/systems/module/add
 func (h *ServerHandler) CreateSystemModule(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		SystemID       string `json:"system_id"`
-		ModuleName     string `json:"module_name"`
-		PackageName    string `json:"package_name"`
-		PackageVersion string `json:"package_version"`
-		Description    string `json:"description"`
-	}
+	// 【修改点1】直接解析为 protocol.SystemModule 结构体
+	// 这样可以自动映射 start_order, readiness_type 等新字段
+	var req protocol.SystemModule
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, err)
+		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 		return
 	}
 
-	if err := h.sysMgr.AddModule(req.SystemID, req.ModuleName, req.PackageName, req.PackageVersion, req.Description); err != nil {
-		response.Error(w, err)
+	// 【修改点2】设置默认值
+	if req.StartOrder <= 0 {
+		req.StartOrder = 1 // 默认为优先级 1
+	}
+
+	// 【修改点3】调用 Manager (Manager.AddModule 的签名也需要同步修改为接收 struct)
+	if err := h.sysMgr.AddModule(req); err != nil {
+		response.Error(w, e.New(code.DatabaseError, "添加组件失败", err))
 		return
 	}
 
-	detail := fmt.Sprintf("Pkg: %s v%s", req.PackageName, req.PackageVersion)
+	// 记录日志 (增加 Order 信息)
+	detail := fmt.Sprintf("Pkg: %s v%s, Order: %d", req.PackageName, req.PackageVersion, req.StartOrder)
 	h.logMgr.RecordLog(utils.GetClientIP(r), "add_module", "module", req.ModuleName, detail, "success")
-	h.broadcastUpdate()
 
+	h.broadcastUpdate()
 	response.Success(w, nil)
 }
 

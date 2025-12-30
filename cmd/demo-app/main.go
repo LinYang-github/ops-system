@@ -55,6 +55,7 @@ func main() {
 	})
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("收到health请求: %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
