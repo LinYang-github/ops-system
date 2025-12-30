@@ -173,12 +173,26 @@
         {
             "label": "5.0 [Test] Mock Cluster",
             "type": "shell",
-            "command": "go run ./cmd/test/tools/mock_cluster.go -count 200 -duration 60s",
+            "command": "go run ./cmd/test/tools/mock_cluster/main.go -count 200 -duration 60s",
             "group": "test",
             "detail": "启动 200 个模拟节点进行压力测试"
         },
         {
-            "label": "5.1 [Build] Demo Apps",
+            "label": "5.1 [Test] Mock Log Storm",
+            "type": "shell",
+            "command": "go run cmd/tests/tools/mock_log_storm/main.go -clients 50 -duration 30s",
+            "group": "test",
+            "detail": "启动 50 个模拟节点持续30s的日志查看"
+        },
+        {
+            "label": "5.2 [Test] Mock Deploy Consumer",
+            "type": "shell",
+            "command": "go run cmd/tests/tools/mock_deploy_consumer/main.go -count 50",
+            "group": "test",
+            "detail": "高密度部署测试"
+        },
+        {
+            "label": "5.9 [Build] Demo Apps",
             "type": "shell",
             "command": "go build -o ${workspaceFolder}/demo-app${exe} ./cmd/tests/apps/demo-app/main.go",
             "group": "build",
