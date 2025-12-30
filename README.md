@@ -1,252 +1,143 @@
-# 🚀 Go Distributed Ops System (GDOS)
+# GDOS (Go Distributed Ops System)
 
 ![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat&logo=go)
 ![Vue Version](https://img.shields.io/badge/Vue-3.x-4FC08D?style=flat&logo=vue.js)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-gray)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
-**GDOS (Go Distributed Ops System)** 是一个轻量级、跨平台、去中心化的分布式运维管理平台。它采用 Master-Worker 架构，后端基于 Golang，前端基于 Vue3 + Element Plus。
+**GDOS** 是一个轻量级、跨平台、去中心化的分布式运维管理平台。采用 Master-Worker 架构，后端基于 Golang，前端基于 Vue3 + Element Plus。
 
-本项目专为中小规模集群设计，无需依赖 Docker/K8s 即可实现**应用部署、进程托管、实时监控、远程终端与审计**。只需一个二进制文件，即可构建私有运维控制台。
+本项目旨在为中小规模集群提供开箱即用的应用部署、进程托管、实时监控与审计能力。系统采用单文件交付模式，无需依赖 Docker、K8s 或外部数据库，即可快速构建私有运维控制台。
 
----
+## 1. 核心特性 (Features)
 
-## ✨ 核心特性
+*   **轻量架构**：无 CGO 依赖，纯 Go 实现 SQLite 驱动；前端资源嵌入二进制文件，零依赖部署。
+*   **节点管理**：Worker 自动注册与心跳保活；自动采集 OS、架构、MAC、磁盘等硬件指纹。
+*   **服务编排**：
+    *   **定义与运行分离**：支持服务组件（Module）规划与实例（Instance）部署解耦。
+    *   **全生命周期**：支持应用的分发、部署、启动、停止及销毁。
+    *   **外部纳管**：支持接管非平台部署的遗留进程（如 Nginx、MySQL），支持 PID 文件及进程名匹配策略。
+*   **实时可观测**：
+    *   **秒级监控**：基于 WebSocket 推送 CPU、内存、IO 速率实时数据。
+    *   **Web 终端**：内置 xterm.js + PTY，提供网页版 SSH 交互能力。
+    *   **告警中心**：支持自定义监控阈值与防抖动机制。
+*   **混合存储**：元数据持久化至 SQLite，高频监控数据驻留内存，支持 MinIO/本地文件系统切换。
+*   **健壮性**：Windows Job Objects / Unix Process Group 进程树管理，防止僵尸进程；支持 Worker 开机自启。
 
-### 🧠 核心架构
-*   **单文件交付**：前端资源通过 `go:embed` 编译进 Master 二进制，**零依赖部署**。
-*   **混合存储引擎**：
-    *   **元数据**：SQLite (Pure Go)，保证数据持久化与一致性。
-    *   **实时监控**：内存 RingBuffer，秒级吞吐，保护磁盘 IO。
-*   **全双工通信**：基于 **WebSocket** 的状态推送与指令下发，告别低效轮询。
-*   **连接池复用**：全局 HTTP Keep-Alive，大幅降低 TCP 握手开销，支持高并发。
+## 2. 技术栈 (Tech Stack)
 
-### 📦 功能模块
-1.  **节点管理 (Node Manager)**
-    *   Worker 自动注册与心跳保活。
-    *   自动采集硬件指纹（OS、架构、MAC、磁盘）。
-    *   支持 **开机自启** (Systemd / Windows Task Scheduler)。
-2.  **服务编排 (Service Orchestration)**
-    *   **定义与运行分离**：先规划服务组件（Module），再部署实例（Instance）。
-    *   **全生命周期**：支持 部署、启动、停止、销毁。
-    *   **纳管外部服务**：支持接管非平台部署的遗留进程（Nginx/MySQL/Jar），支持 **PID 文件** 或 **进程名匹配** 策略。
-    *   **批量操作**：支持系统级一键全启/全停，后端并发分发指令。
-3.  **可观测性 (Observability)**
-    *   **实时监控**：秒级展示 CPU、内存、IO 读写速率趋势。
-    *   **Web 终端**：基于 xterm.js + PTY 实现的网页版 SSH，支持 vim/top 等交互命令。
-    *   **告警中心**：支持自定义阈值、防抖动机制、历史记录查询。
-    *   **远程日志**：支持实时 Tail 查看业务日志，支持多文件切换。
-4.  **制品管理 (Artifacts)**
-    *   支持 **本地文件系统** 或 **MinIO 对象存储**（命令行一键切换）。
-    *   Worker 端实现大文件缓存与去重，避免网络风暴。
+*   **Backend**: Go 1.21+
+*   **Frontend**: Vue 3, Element Plus, Vite
+*   **Database**: SQLite (modernc.org/sqlite, Pure Go)
+*   **Communication**: HTTP/REST (Control Plane), WebSocket (Data Plane)
+*   **Terminal**: xterm.js, creack/pty
+*   **Storage**: Local Filesystem / MinIO S3
 
----
+## 3. 快速开始 (Quick Start)
 
-## 🏗️ 系统架构
+### 前置要求
+*   Go 1.21+
+*   Node.js 16+ (仅构建前端需要)
 
-```mermaid
-graph TD
-    User[用户浏览器] <-->|WebSocket + REST| Master
-    
-    subgraph "Master Node (控制面)"
-        Master[Master Server]
-        SQLite[(SQLite DB)]
-        MemMap[Metrics Cache]
-        StoreProvider[Storage Interface]
-        
-        Master --> SQLite
-        Master --> MemMap
-        Master --> StoreProvider
-    end
-    
-    subgraph "Storage Layer"
-        StoreProvider -.->|Local Mode| Disk[Local Disk]
-        StoreProvider -.->|Remote Mode| MinIO[MinIO Server]
-    end
-    
-    subgraph "Worker Node (数据面)"
-        Worker[Worker Agent]
-        ProcessA[Managed Process]
-        ProcessB[External Process]
-        
-        Worker -->|Heartbeat| Master
-        Master -->|Control Cmd| Worker
-        Worker -.->|Download| StoreProvider
-        
-        Worker -->|Monitor/JobObject| ProcessA
-        Worker -->|Adopt/PID| ProcessB
-    end
+### 构建步骤
+
+```bash
+# 1. 构建前端资源
+cd web
+npm install && npm run build
+cd ..
+
+# 2. 整理后端依赖
+go mod tidy
+
+# 3. 编译二进制文件
+# Linux/macOS
+go build -o master ./cmd/master/main.go
+go build -o worker ./cmd/worker/main.go
+go build -o pack-tool ./cmd/pack-tool/main.go
+
+# Windows
+# go build -o master.exe ./cmd/master/main.go
+# go build -o worker.exe ./cmd/worker/main.go
 ```
 
----
+### 启动运行
 
-## 📂 项目结构
+**启动 Master (控制节点)**
+```bash
+# 默认监听 :8080，数据存放在当前目录
+./master
+```
+访问浏览器：`http://localhost:8080`
+
+**启动 Worker (工作节点)**
+```bash
+# 默认连接 127.0.0.1:8080
+./worker
+
+# 指定连接远程 Master
+./worker -master http://192.168.1.100:8080 -port 8081
+```
+
+## 4. 使用示例 (Usage)
+
+### 命令行参数
+
+**Master Server**
+```bash
+./master \
+  -port :9090 \                  # 监听端口
+  -db_path /data/ops.db \        # SQLite 数据库路径
+  -store_type minio \            # 存储后端：local 或 minio
+  -minio_endpoint 10.0.0.5:9000  # MinIO 地址
+```
+
+**Worker Agent**
+```bash
+./worker \
+  -port 8082 \                   # Worker 自身监听端口
+  -master http://10.0.0.1:8080 \ # Master 地址
+  -work_dir /opt/instances \     # 实例运行目录
+  -autostart 1                   # 设置开机自启 (需 root/admin 权限)
+```
+
+### 打包工具 (Pack Tool)
+生成符合平台规范的 ZIP 服务包：
+
+```bash
+# 1. 初始化项目模板
+./pack-tool init ./my-project
+
+# 2. 编辑生成的 service.json (配置启动命令、健康检查等)
+
+# 3. 打包
+./pack-tool build ./my-project -o my-service-v1.zip
+```
+
+## 5. 项目结构 (Project Structure)
 
 ```text
 ops-system/
-├── assets.go                # 前端资源 Embed 入口
-├── cmd/                     # 入口文件
-│   ├── master/              # Master 主程序
-│   ├── worker/              # Worker 主程序
-│   └── pack-tool/           # 打包工具 CLI
-├── internal/                # 内部业务逻辑
+├── cmd/                     # 程序入口
+│   ├── master/              # Master 主服务
+│   ├── worker/              # Worker 代理服务
+│   └── pack-tool/           # CLI 打包工具
+├── internal/                # 内部私有代码
 │   ├── master/
-│   │   ├── api/             # HTTP Handlers (路由与逻辑分发)
-│   │   ├── db/              # 数据库初始化
-│   │   ├── manager/         # 核心业务 (System, Instance, Log, Package)
-│   │   ├── monitor/         # 内存时序存储
-│   │   └── ws/              # WebSocket 广播中心
+│   │   ├── api/             # HTTP Handlers & Router
+│   │   ├── manager/         # 核心业务逻辑 (System, Node, Package)
+│   │   └── ws/              # WebSocket Hub
 │   └── worker/
-│       ├── agent/           # 心跳与注册
-│       ├── executor/        # 执行器 (部署、进程管理、监控、PTY终端)
-│       ├── handler/         # Worker HTTP Server
-│       └── utils/           # Worker 工具 (自启等)
-├── pkg/                     # 公共包
-│   ├── protocol/            # 通讯协议结构体
-│   ├── storage/             # 存储抽象层 (Local/MinIO)
-│   ├── packer/              # 打包逻辑核心库
-│   └── utils/               # HTTP Client 封装
-└── web/                     # Vue3 前端源码
+│       ├── executor/        # 进程执行器 (PTY, Process Group)
+│       └── agent/           # 心跳与注册逻辑
+├── pkg/                     # 公共库
+│   ├── protocol/            # 通信协议定义
+│   └── storage/             # 存储接口实现 (Local/MinIO)
+└── web/                     # Vue3 前端源代码
 ```
 
----
+## 6. 文档与扩展阅读
 
-## 🚀 环境与构建
-
-### 1. 环境准备
-*   **Go**: 1.21+
-*   **Node.js**: 16+ (仅构建前端需要)
-*   **GCC**: 不需要 (使用 pure-go SQLite 驱动)
-
-### 2. 编译指南
-
-#### 第一步：构建前端
-```bash
-cd web
-npm install
-npm run build
-# 产物将生成在 web/dist，供 Master 嵌入
-cd ..
-```
-
-#### 第二步：构建后端
-```bash
-go mod tidy
-
-# 1. 编译 Master
-go build -o master ./cmd/master/main.go
-# (Windows) go build -o master.exe ./cmd/master/main.go
-
-# 2. 编译 Worker
-go build -o worker ./cmd/worker/main.go
-
-# 3. 编译打包工具
-go build -o pack-tool ./cmd/pack-tool/main.go
-```
-
----
-
-## 💻 运行与部署
-
-### Master (控制节点)
-Master 默认监听 `:8080`，数据存储在当前目录。
-
-```bash
-# 默认启动 (本地存储)
-./master
-
-# 生产环境启动 (修改端口、使用 MinIO、指定 DB 路径)
-./master -port :9090 \
-         -db_path /data/ops.db \
-         -store_type minio \
-         -minio_endpoint 192.168.1.100:9000 \
-         -minio_ak admin -minio_sk password
-```
-
-### Worker (被控节点)
-Worker 默认监听 `:8081`，启动后自动连接 Master。
-
-```bash
-# 默认启动
-./worker
-
-# 指定 Master 地址
-./worker -port 8082 -master http://192.168.1.100:9090
-
-# 设置开机自启 (需要管理员/Root权限)
-# 注意：自启命令会将当前参数写入系统服务文件
-sudo ./worker -master http://1.2.3.4:9090 -autostart 1
-```
-
----
-
-## 📦 服务包管理与规范
-
-为了规范化管理，系统提供了 `pack-tool` 工具，且强制要求 ZIP 包包含 `service.json`。
-
-### 1. 打包工具使用
-```bash
-# 初始化目录 (生成 service.json 模板)
-./pack-tool init ./my-project
-
-# 打包 (校验并生成 zip)
-./pack-tool build ./my-project -o my-app-v1.zip
-```
-
-### 2. `service.json` 规范详解
-这是 Worker 管理进程的核心依据。
-
-```json
-{
-  "name": "payment-service",      // 服务名称
-  "version": "1.0.2",             // 版本号
-  "os": "linux",                  // 适用系统 (windows/linux)
-  
-  // --- 启动配置 ---
-  // 相对路径。Windows下自动补全.exe，Linux下自动赋予+x权限
-  "entrypoint": "bin/app_linux",
-  "args": ["-c", "../conf/config.yaml"],
-  "env": {
-    "GIN_MODE": "release"
-  },
-
-  // --- 停止配置 (可选) ---
-  // 默认为 Kill PID。Java/Tomcat 等复杂应用建议配置脚本。
-  "stop_entrypoint": "bin/stop.sh",
-
-  // --- 纳管配置 (仅用于外部服务接管) ---
-  "is_external": false,          // 是否为纳管服务
-  "pid_strategy": "spawn",       // "spawn"(默认): 父子进程; "match": 匹配进程名
-  "process_name": "java.exe",    // 仅 match 策略需要
-
-  // --- 日志配置 (可选) ---
-  // 用于前端下拉查看不同的日志文件
-  "log_paths": {
-      "Access Log": "logs/access.log",
-      "Error Log": "/var/log/app/error.log"
-  }
-}
-```
-
----
-
-## 🛠️ 命令行参数参考
-
-### Master Flags
-| 参数 | 默认值 | 描述 |
-| :--- | :--- | :--- |
-| `-port` | `:8080` | HTTP 服务监听地址 |
-| `-upload_dir` | `./uploads` | 本地存储模式下的文件路径 |
-| `-db_path` | `./ops_data.db` | SQLite 数据库路径 |
-| `-store_type` | `local` | 存储后端: `local` 或 `minio` |
-| `-config` | `` | 指定 config.yaml 配置文件路径 |
-| `-minio_xxx` | ... | MinIO 相关配置 (endpoint, ak, sk, bucket) |
-
-### Worker Flags
-| 参数 | 默认值 | 描述 |
-| :--- | :--- | :--- |
-| `-port` | `8081` | Worker HTTP 监听端口 (用于 Master 回调) |
-| `-master` | `http://127.0.0.1:8080` | Master 地址 |
-| `-work_dir` | `./instances` | 实例运行目录 |
-| `-autostart` | `-1` | 自启设置: `1`=开启, `0`=关闭, `-1`=忽略 |
-| `-secret` | `...` | 鉴权密钥 (需与 Master 一致) |
+*   **架构设计细节**：请参阅 [DESIGN.md](./DESIGN.md) 了解 Master-Worker 通信模型及数据一致性设计。
+*   **服务包规范**：关于 `service.json` 的详细配置说明，请参考 `docs/spec_service_json.md`。
+*   **API 文档**：请参考 Postman 集合或 `docs/api.md`。
