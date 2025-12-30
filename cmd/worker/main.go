@@ -29,7 +29,7 @@ func main() {
 	defaultWorkDir := filepath.Join(exPath, "instances")
 
 	// 2. 命令行参数定义
-	cfgFile := pflag.StringP("config", "c", "", "Config file path")
+	cfgFile := pflag.StringP("config", "c", "", "Config file path (default: ./worker.yaml)")
 
 	pflag.Int("port", 8081, "Worker listening port")
 	viper.BindPFlag("server.port", pflag.Lookup("port"))

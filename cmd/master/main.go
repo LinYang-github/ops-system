@@ -25,7 +25,7 @@ func main() {
 
 	// 2. 定义命令行参数 (使用 pflag 替代 flag)
 	// -c 或 --config 用于指定配置文件路径
-	cfgFile := pflag.StringP("config", "c", "", "Path to config file (optional, e.g. config.yaml)")
+	cfgFile := pflag.StringP("config", "c", "", "Path to config file (default: ./config.yaml)")
 
 	// --- Server 配置 ---
 	pflag.String("port", ":8080", "Listening port")
