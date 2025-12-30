@@ -9,7 +9,7 @@
     </div>
 
     <div class="content" v-if="currentDir" v-loading="loading">
-      <el-form :model="form" label-width="100px" size="small">
+      <el-form :model="form" label-width="110px" size="small">
         
         <el-tabs v-model="activeTab" type="border-card">
           <!-- 1. 基础信息 -->
@@ -22,8 +22,8 @@
             </el-form-item>
             <el-form-item label="操作系统">
               <el-select v-model="form.os" style="width: 100%">
-                <el-option label="Windows" value="windows" />
                 <el-option label="Linux" value="linux" />
+                <el-option label="Windows" value="windows" />
                 <el-option label="macOS" value="darwin" />
               </el-select>
             </el-form-item>
@@ -32,56 +32,83 @@
             </el-form-item>
           </el-tab-pane>
 
-          <!-- 2. 启动配置 -->
+          <!-- 2. 启动/停止 -->
           <el-tab-pane label="启动/停止" name="process">
             <el-divider content-position="left">启动配置</el-divider>
             <el-form-item label="启动入口">
-              <el-input v-model="form.entrypoint" placeholder="相对路径，如 bin/app.exe" />
+              <el-input v-model="form.entrypoint" placeholder="相对路径，如 bin/app" />
             </el-form-item>
             
             <el-form-item label="启动参数">
               <div v-for="(arg, index) in form.argsList" :key="index" class="dynamic-row">
-                <el-input v-model="arg.value" placeholder="参数值，如 -c config.yaml" />
-                <el-button type="danger" icon="Delete" circle @click="removeArg(index)" />
+                <el-input v-model="arg.value" placeholder="参数值" />
+                <el-button type="danger" :icon="Delete" circle @click="removeArg(index)" />
               </div>
               <el-button type="primary" plain icon="Plus" size="small" @click="addArg" style="width: 100%">添加参数</el-button>
             </el-form-item>
 
             <el-divider content-position="left">停止配置 (可选)</el-divider>
+            <div class="tip-text">不填则默认使用 Kill PID 方式停止</div>
             <el-form-item label="停止脚本">
               <el-input v-model="form.stop_entrypoint" placeholder="如 bin/stop.sh" />
             </el-form-item>
             <el-form-item label="停止参数">
               <div v-for="(arg, index) in form.stopArgsList" :key="index" class="dynamic-row">
                 <el-input v-model="arg.value" />
-                <el-button type="danger" icon="Delete" circle @click="removeStopArg(index)" />
+                <el-button type="danger" :icon="Delete" circle @click="removeStopArg(index)" />
               </div>
-              <el-button type="primary" plain icon="Plus" size="small" @click="addStopArg" style="width: 100%">添加参数</el-button>
+              <el-button type="primary" plain :icon="Plus" size="small" @click="addStopArg" style="width: 100%">添加参数</el-button>
             </el-form-item>
           </el-tab-pane>
 
-          <!-- 3. 环境与日志 -->
+          <!-- 3. 健康检查 (新增) -->
+          <el-tab-pane label="健康检查" name="health">
+            <el-alert title="Worker 将在启动后根据此配置检测服务是否就绪" type="info" :closable="false" style="margin-bottom: 15px" />
+            
+            <el-form-item label="检测类型">
+              <el-radio-group v-model="form.readiness_type">
+                <el-radio-button label="tcp">TCP 端口</el-radio-button>
+                <el-radio-button label="http">HTTP 请求</el-radio-button>
+                <el-radio-button label="time">固定延时</el-radio-button>
+                <el-radio-button label="none">不检测</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+
+            <template v-if="form.readiness_type !== 'none'">
+              <el-form-item label="检测目标">
+                <el-input v-model="form.readiness_target" :placeholder="targetPlaceholder" />
+                <div class="tip-text">{{ targetTip }}</div>
+              </el-form-item>
+
+              <el-form-item label="超时时间(秒)">
+                <el-input-number v-model="form.readiness_timeout" :min="1" />
+              </el-form-item>
+            </template>
+          </el-tab-pane>
+
+          <!-- 4. 环境与日志 -->
           <el-tab-pane label="环境/日志" name="env">
             <el-divider content-position="left">环境变量 (ENV)</el-divider>
             <div v-for="(item, index) in form.envList" :key="index" class="dynamic-row kv-row">
-              <el-input v-model="item.key" placeholder="Key (e.g. GIN_MODE)" />
+              <el-input v-model="item.key" placeholder="Key (e.g. GIN_MODE)" style="width: 40%" />
               <span class="eq">=</span>
-              <el-input v-model="item.val" placeholder="Value (e.g. release)" />
-              <el-button type="danger" icon="Delete" circle @click="removeEnv(index)" />
+              <el-input v-model="item.val" placeholder="Value (e.g. release)" style="flex:1" />
+              <el-button type="danger" :icon="Delete" circle @click="removeEnv(index)" />
             </div>
-            <el-button type="primary" plain icon="Plus" size="small" @click="addEnv" style="width: 100%">添加环境变量</el-button>
+            <el-button type="primary" plain :icon="Plus" size="small" @click="addEnv" style="width: 100%">添加环境变量</el-button>
 
             <el-divider content-position="left">日志文件映射</el-divider>
+            <div class="tip-text">配置后可在 Web 终端下拉切换查看不同日志文件</div>
              <div v-for="(item, index) in form.logList" :key="index" class="dynamic-row kv-row">
-              <el-input v-model="item.key" placeholder="显示名 (e.g. Access Log)" />
+              <el-input v-model="item.key" placeholder="显示名 (e.g. Access Log)" style="width: 40%" />
               <span class="eq">-></span>
-              <el-input v-model="item.val" placeholder="路径 (e.g. logs/access.log)" />
-              <el-button type="danger" icon="Delete" circle @click="removeLog(index)" />
+              <el-input v-model="item.val" placeholder="相对路径 (e.g. logs/access.log)" style="flex:1" />
+              <el-button type="danger" :icon="Delete" circle @click="removeLog(index)" />
             </div>
-            <el-button type="primary" plain icon="Plus" size="small" @click="addLog" style="width: 100%">添加日志配置</el-button>
+            <el-button type="primary" plain :icon="Plus" size="small" @click="addLog" style="width: 100%">添加日志配置</el-button>
           </el-tab-pane>
 
-          <!-- 4. 高级预览 -->
+          <!-- 5. 预览 -->
           <el-tab-pane label="JSON预览" name="preview">
             <pre class="json-preview">{{ previewJson }}</pre>
           </el-tab-pane>
@@ -90,12 +117,13 @@
       </el-form>
 
       <div class="footer-bar">
-        <el-button @click="handleSave" icon="Files">仅保存配置</el-button>
-        <el-button type="success" @click="handleBuild" icon="Box">保存并打包 ZIP</el-button>
+        <el-button @click="handleSave" :icon="Files">仅保存配置</el-button>
+        <el-button type="success" @click="handleBuild" :icon="Box">保存并打包 ZIP</el-button>
       </div>
     </div>
 
     <div v-else class="empty-state">
+      <el-icon :size="60" color="#dcdfe6" style="margin-bottom: 20px"><Box /></el-icon>
       <p>请先选择一个包含源代码的文件夹</p>
       <el-button type="primary" size="large" @click="handleSelectDir">选择文件夹</el-button>
     </div>
@@ -112,18 +140,43 @@ const currentDir = ref('')
 const activeTab = ref('basic')
 const loading = ref(false)
 
-// 表单数据 (包含转换后的 List 结构)
+// 表单数据结构
 const form = reactive({
   name: '',
   version: '',
   description: '',
-  os: 'windows',
+  os: 'linux',
+  
   entrypoint: '',
-  argsList: [],       // [{value: ''}]
+  argsList: [],
   stop_entrypoint: '',
-  stopArgsList: [],   // [{value: ''}]
-  envList: [],        // [{key: '', val: ''}]
-  logList: []         // [{key: '', val: ''}]
+  stopArgsList: [],
+  
+  // 健康检查
+  readiness_type: 'none',
+  readiness_target: '',
+  readiness_timeout: 30,
+
+  envList: [],
+  logList: []
+})
+
+// 计算属性：提示文本
+const targetPlaceholder = computed(() => {
+  switch (form.readiness_type) {
+    case 'tcp': return '127.0.0.1:8080'
+    case 'http': return 'http://127.0.0.1:8080/health'
+    case 'time': return '等待秒数'
+    default: return ''
+  }
+})
+const targetTip = computed(() => {
+  switch (form.readiness_type) {
+    case 'tcp': return 'Worker 将尝试连接此 IP:Port，连接成功即视为就绪'
+    case 'http': return 'Worker 将发起 GET 请求，返回 200-399 即视为就绪'
+    case 'time': return 'Worker 将强制等待指定秒数，然后视为就绪'
+    default: return ''
+  }
 })
 
 // --- 逻辑处理 ---
@@ -141,34 +194,35 @@ const loadConfig = async (dir) => {
   try {
     const jsonStr = await LoadManifest(dir)
     if (!jsonStr) {
-      // 文件不存在
       ElMessageBox.confirm('该目录没有 service.json，是否初始化默认模板？', '初始化', {
         confirmButtonText: '初始化',
         cancelButtonText: '取消',
         type: 'info'
       }).then(async () => {
         await InitTemplate(dir)
-        loadConfig(dir) // 重新加载
+        loadConfig(dir)
       }).catch(() => {
-        currentDir.value = '' // 取消则重置
+        currentDir.value = ''
       })
       return
     }
     
-    // 解析 JSON 并映射到 UI 结构
     const data = JSON.parse(jsonStr)
     form.name = data.name || ''
     form.version = data.version || ''
     form.description = data.description || ''
-    form.os = data.os || 'windows'
+    form.os = data.os || 'linux'
+    
     form.entrypoint = data.entrypoint || ''
     form.stop_entrypoint = data.stop_entrypoint || ''
     
-    // 数组转换
+    // 健康检查
+    form.readiness_type = data.readiness_type || 'none'
+    form.readiness_target = data.readiness_target || ''
+    form.readiness_timeout = data.readiness_timeout || 30
+    
     form.argsList = (data.args || []).map(s => ({ value: s }))
     form.stopArgsList = (data.stop_args || []).map(s => ({ value: s }))
-    
-    // Map 转换
     form.envList = Object.entries(data.env || {}).map(([k, v]) => ({ key: k, val: v }))
     form.logList = Object.entries(data.log_paths || {}).map(([k, v]) => ({ key: k, val: v }))
     
@@ -179,18 +233,22 @@ const loadConfig = async (dir) => {
   }
 }
 
-// 生成符合协议的 JSON 对象
 const generateJsonObj = () => {
   return {
     name: form.name,
     version: form.version,
     description: form.description,
     os: form.os,
+    
     entrypoint: form.entrypoint,
     args: form.argsList.map(i => i.value),
     stop_entrypoint: form.stop_entrypoint,
     stop_args: form.stopArgsList.map(i => i.value),
-    // 数组转对象
+    
+    readiness_type: form.readiness_type,
+    readiness_target: form.readiness_target,
+    readiness_timeout: form.readiness_timeout,
+
     env: form.envList.reduce((acc, cur) => {
       if(cur.key) acc[cur.key] = cur.val
       return acc
@@ -220,10 +278,7 @@ const handleSave = async () => {
 }
 
 const handleBuild = async () => {
-  // 先保存
   if (!await handleSave()) return
-
-  // 选择输出路径
   const defaultName = `${form.name}_${form.version}.zip`
   const destPath = await SelectSaveFile(defaultName)
   
@@ -231,7 +286,6 @@ const handleBuild = async () => {
     loading.value = true
     try {
       const res = await BuildPackage(currentDir.value, destPath)
-      // Go 方法如果返回 error 会抛出异常，否则返回 Success 字符串
       if (res && res.startsWith("Error")) {
           throw new Error(res)
       }
@@ -244,7 +298,6 @@ const handleBuild = async () => {
   }
 }
 
-// --- 动态增删 ---
 const addArg = () => form.argsList.push({ value: '' })
 const removeArg = (i) => form.argsList.splice(i, 1)
 const addStopArg = () => form.stopArgsList.push({ value: '' })
@@ -257,37 +310,20 @@ const removeLog = (i) => form.logList.splice(i, 1)
 </script>
 
 <style>
-/* 全局样式重置 */
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f5f7fa; }
 </style>
 
 <style scoped>
 .app-container { display: flex; flex-direction: column; height: 100vh; }
-
-.header {
-  background: #fff;
-  padding: 15px 20px;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex; justify-content: space-between; align-items: center;
-}
-.header h2 { margin: 0; color: #303133; }
+.header { background: #fff; padding: 15px 20px; border-bottom: 1px solid #e4e7ed; display: flex; justify-content: space-between; align-items: center; }
+.header h2 { margin: 0; color: #303133; font-size: 20px; }
 .actions { display: flex; align-items: center; gap: 10px; }
 .path-display { font-size: 12px; color: #909399; max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #f2f6fc; padding: 4px 8px; border-radius: 4px; }
-
 .content { flex: 1; padding: 20px; overflow-y: auto; max-width: 800px; margin: 0 auto; width: 100%; box-sizing: border-box;}
 .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #909399; gap: 20px; }
-
-.footer-bar {
-  margin-top: 20px;
-  padding-top: 20px;
-  border-top: 1px solid #e4e7ed;
-  display: flex; justify-content: flex-end; gap: 12px;
-}
-
+.footer-bar { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e4e7ed; display: flex; justify-content: flex-end; gap: 12px; }
 .dynamic-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
 .kv-row .eq { color: #909399; font-weight: bold; }
-
-.json-preview {
-  background: #282c34; color: #abb2bf; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; overflow: auto; max-height: 400px;
-}
+.tip-text { font-size: 12px; color: #909399; margin-bottom: 10px; }
+.json-preview { background: #282c34; color: #abb2bf; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; overflow: auto; max-height: 400px; }
 </style>
