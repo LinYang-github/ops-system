@@ -213,6 +213,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/nodes/reset_name", h.ResetNodeName)
 	mux.HandleFunc("/api/ctrl/cmd", h.TriggerCmd)
 	mux.HandleFunc("/api/node/terminal", h.HandleNodeTerminal) // Web终端
+	mux.HandleFunc("/api/nodes/clean_cache", h.CleanNodeCache)
 
 	// --- System 配置相关 ---
 	mux.HandleFunc("/api/systems", h.GetSystems)
@@ -279,6 +280,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/alerts/events/clear", h.ClearEvents)
 
 	mux.HandleFunc("/api/login", h.HandleLogin)
+	mux.HandleFunc("/api/maintenance/cleanup_all_cache", h.CleanAllNodesCache)
 	// --- WebSocket ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 

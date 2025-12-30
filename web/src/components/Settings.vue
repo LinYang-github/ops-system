@@ -9,7 +9,7 @@
                <el-icon><Tools /></el-icon> 
                <span>系统参数配置</span>
             </div>
-            <div class="card-actions">
+            <div class="card-actions" v-if="activeTab !== 'maintenance'">
                <el-button type="primary" icon="Check" @click="saveAllConfig" :loading="saving">保存所有配置</el-button>
             </div>
           </div>
@@ -92,19 +92,66 @@
                 </el-form-item>
               </el-form>
             </el-tab-pane>
+            <!-- Tab 3: 运维维护 (新增) -->
+            <el-tab-pane label="运维维护" name="maintenance">
+              <div class="maintenance-panel">
+                <div class="section-title">存储空间清理</div>
+                
+                <el-alert
+                  title="功能说明"
+                  type="info"
+                  :closable="false"
+                  show-icon
+                  class="mb-20"
+                >
+                  <template #default>
+                    此操作将向集群内所有<b>在线节点</b>下发清理指令，删除 `instances/pkg_cache/` 目录下的服务包文件。
+                    <br/>建议在磁盘空间不足或大版本更新后执行。
+                  </template>
+                </el-alert>
 
+                <div class="action-row">
+                  <div class="label-group">
+                    <span class="main-label">清理节点下载缓存</span>
+                    <span class="sub-label">删除 Worker 节点已下载的 ZIP 包，不影响运行中的服务。</span>
+                  </div>
+                  <el-button type="warning" plain icon="Brush" @click="openCleanDialog">立即清理</el-button>
+                </div>
+
+                <!-- 预留位置：后续可以在这里加 日志清理、孤儿进程清理 等功能 -->
+              </div>
+            </el-tab-pane>
           </el-tabs>
         </div>
       </el-card>
 
     </div>
+    <!-- 弹窗：清理确认 -->
+    <el-dialog v-model="cleanDialog.visible" title="清理全网节点缓存" width="450px">
+      <el-form label-position="top">
+        <el-form-item label="保留策略">
+          <el-radio-group v-model="cleanDialog.retain">
+            <el-radio :label="0" border>全部清理 (推荐)</el-radio>
+            <el-radio :label="1" border>保留最近 1 个版本</el-radio>
+            <el-radio :label="3" border>保留最近 3 个版本</el-radio>
+          </el-radio-group>
+          <div class="tip-text" style="margin-top: 10px; color: #999; font-size: 12px;">
+            选择“保留版本”时，Worker 会按服务名分组，保留下载时间最新的 N 个包，删除旧包。
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="cleanDialog.visible = false">取消</el-button>
+        <el-button type="primary" @click="executeClean" :loading="cleanDialog.loading">开始执行</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import request from '../utils/request'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { Check, Tools, InfoFilled } from '@element-plus/icons-vue'
 
 const loading = ref(false)
@@ -125,6 +172,11 @@ const nacosForm = reactive({
   password: ''
 })
 
+const cleanDialog = reactive({
+  visible: false,
+  loading: false,
+  retain: 0
+})
 const loadAllConfig = async () => {
   loading.value = true
   try {
@@ -180,6 +232,45 @@ const saveAllConfig = async () => {
   }
 }
 
+const openCleanDialog = () => {
+  cleanDialog.retain = 0
+  cleanDialog.visible = true
+}
+
+const executeClean = async () => {
+  cleanDialog.loading = true
+  try {
+    const res = await request.post('/api/maintenance/cleanup_all_cache', {
+      retain: cleanDialog.retain
+    })
+    
+    cleanDialog.visible = false
+    
+    // 显示详细结果通知
+    const totalSize = formatSize(res.total_freed)
+    ElNotification({
+      title: '清理完成',
+      message: `成功节点: ${res.success_count} / ${res.total_nodes}，共释放空间: ${totalSize}`,
+      type: 'success',
+      duration: 5000
+    })
+    
+  } catch (e) {
+    ElMessage.error('请求失败: ' + e.message)
+  } finally {
+    cleanDialog.loading = false
+  }
+}
+
+const formatSize = (bytes) => {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+
 onMounted(loadAllConfig)
 </script>
 
@@ -197,4 +288,17 @@ onMounted(loadAllConfig)
 .unit { color: var(--el-text-color-secondary); }
 .tip { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.4; margin-top: 6px; }
 .tip-box { background-color: var(--el-color-success-light-9); border-radius: 4px; padding: 8px 12px; display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 13px; color: var(--el-color-success); }
+/* 新增维护面板样式 */
+.maintenance-panel { padding: 0 10px; }
+.mb-20 { margin-bottom: 20px; }
+.action-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 20px;
+  background-color: var(--el-fill-color-light);
+  border-radius: 6px;
+  border: 1px solid var(--el-border-color-lighter);
+}
+.label-group { display: flex; flex-direction: column; gap: 6px; }
+.main-label { font-weight: 600; color: var(--el-text-color-primary); font-size: 14px; }
+.sub-label { color: var(--el-text-color-secondary); font-size: 12px; }
 </style>

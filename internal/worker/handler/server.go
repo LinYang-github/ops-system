@@ -29,6 +29,7 @@ func StartWorkerServer(port string) {
 	http.HandleFunc("/api/deploy", handleDeploy)
 	http.HandleFunc("/api/instance/action", handleInstanceAction) // 处理实例启停
 	http.HandleFunc("/api/external/register", handleRegisterExternal)
+	http.HandleFunc("/api/maintenance/cleanup_cache", handleCleanupCache)
 
 	http.HandleFunc("/api/log/ws", handleLogStream)
 	http.HandleFunc("/api/log/files", handleGetLogFiles)
@@ -213,4 +214,44 @@ func handleGetLogFiles(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// [新增] 处理缓存清理请求
+func handleCleanupCache(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+
+	// 解析请求参数
+	var req struct {
+		Retain int `json:"retain"` // 保留数量，默认为 0 (全删)
+	}
+
+	// 允许 Body 为空，此时 Retain 默认为 0
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", 400)
+			return
+		}
+	}
+
+	// 参数防御：如果不传或者传负数，默认可能比较危险
+	// 这里我们约定：
+	// n >= 0 : 保留 n 个
+	// 如果用户真的想全删，传 0 即可
+
+	result, err := executor.CleanupPackageCache(req.Retain)
+	if err != nil {
+		log.Printf("[Cleanup] Error: %v", err)
+		http.Error(w, fmt.Sprintf("Cleanup failed: %v", err), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"code": 0,
+		"msg":  "success",
+		"data": result,
+	})
 }
