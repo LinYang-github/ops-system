@@ -173,14 +173,14 @@
         {
             "label": "5.0 [Test] Mock Cluster",
             "type": "shell",
-            "command": "go run ./cmd/test-tool/mock_cluster.go -count 200 -duration 60s",
+            "command": "go run ./cmd/test/tools/mock_cluster.go -count 200 -duration 60s",
             "group": "test",
             "detail": "启动 200 个模拟节点进行压力测试"
         },
         {
             "label": "5.1 [Build] Demo Apps",
             "type": "shell",
-            "command": "go build -o ${workspaceFolder}/demo-app${exe} ./cmd/demo-app/main.go",
+            "command": "go build -o ${workspaceFolder}/demo-app${exe} ./cmd/tests/apps/demo-app/main.go",
             "group": "build",
             "detail": "构建测试用的 Demo 应用"
         },
