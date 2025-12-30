@@ -100,6 +100,17 @@ go build -o pack-tool ./cmd/pack-tool/main.go
   -work_dir /opt/instances \     # 实例运行目录
   -autostart 1                   # 设置开机自启 (需 root/admin 权限)
 ```
+### 配置文件 (推荐)
+GDOS 支持通过 YAML 文件进行详细配置（如日志轮转、存储后端等）。
+
+*   **Master**: 默认读取 `./config.yaml`
+*   **Worker**: 默认读取 `./worker.yaml`
+
+📄 **[点击查看详细配置手册 (Configuration Docs)](./docs/configuration.md)**
+
+### 环境变量
+支持使用 `OPS_MASTER_` 和 `OPS_WORKER_` 前缀的环境变量覆盖配置。
+例如：`OPS_WORKER_CONNECT_MASTER_URL=http://10.0.0.1:8080 ./worker`
 
 ### 打包工具 (Pack Tool)
 生成符合平台规范的 ZIP 服务包：
