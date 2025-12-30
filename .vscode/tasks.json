@@ -1,209 +1,208 @@
 {
-  "version": "2.0.0",
-  "tasks": [
-      // ============================================================
-      // 1. 前端任务 (Web Frontend)
-      // ============================================================
-      {
-          "label": "1. [Init] Install Web Deps",
-          "type": "shell",
-          "command": "npm install",
-          "options": {
-              "cwd": "${workspaceFolder}/web"
-          },
-          "group": "none",
-          "presentation": {
-              "reveal": "silent"
-          }
-      },
-      {
-          "label": "2. [Build] Web Frontend (Dist)",
-          "type": "shell",
-          "command": "npm run build",
-          "options": {
-              "cwd": "${workspaceFolder}/web"
-          },
-          "group": "build",
-          "dependsOn": "1. [Init] Install Web Deps",
-          "detail": "生成 web/dist 目录，供 Master 嵌入使用"
-      },
-      {
-          "label": "3. [Dev] Start Web Server",
-          "type": "shell",
-          "command": "npm run dev",
-          "options": {
-              "cwd": "${workspaceFolder}/web"
-          },
-          "isBackground": true,
-          "problemMatcher": {
-              "owner": "custom",
-              "pattern": {
-                  "regexp": "^$"
-              },
-              "background": {
-                  "activeOnStart": true,
-                  "beginsPattern": "VITE v",
-                  "endsPattern": "Network:"
-              }
-          },
-          "detail": "启动前端开发服务器 (localhost:5173)"
-      },
+    "version": "2.0.0",
+    "options": {
+        "env": {
+            "GOPROXY": "https://goproxy.cn,direct",
+            "CGO_ENABLED": "0" // 默认关闭 CGO 以便跨平台 (Wails 除外)
+        }
+    },
+    // --- 跨平台变量定义 ---
+    "windows": {
+        "options": {
+            "env": { "exe": ".exe", "rm_cmd": "del /q", "rmdir_cmd": "rmdir /s /q" }
+        }
+    },
+    "linux": {
+        "options": {
+            "env": { "exe": "", "rm_cmd": "rm -f", "rmdir_cmd": "rm -rf" }
+        }
+    },
+    "osx": {
+        "options": {
+            "env": { "exe": "", "rm_cmd": "rm -f", "rmdir_cmd": "rm -rf" }
+        }
+    },
+    "tasks": [
+        // ============================================================
+        // 1. 依赖管理 (Dependencies)
+        // ============================================================
+        {
+            "label": "1.0 [Init] Go Mod Tidy (Root)",
+            "type": "shell",
+            "command": "go mod tidy && go mod vendor",
+            "group": "none",
+            "detail": "整理后端依赖并同步到 vendor (Master/Worker/CLI)"
+        },
+        {
+            "label": "1.1 [Init] Install Web Deps (Dashboard)",
+            "type": "shell",
+            "command": "npm install",
+            "options": { "cwd": "${workspaceFolder}/web" },
+            "group": "none",
+            "detail": "安装主控台前端依赖"
+        },
+        {
+            "label": "1.2 [Init] Install Packer GUI Deps (Wails)",
+            "type": "shell",
+            "command": "npm install",
+            "options": { "cwd": "${workspaceFolder}/ops-packer/frontend" },
+            "group": "none",
+            "detail": "安装打包工具界面版的前端依赖"
+        },
 
-      // ============================================================
-      // 2. 后端构建 (Backend Build)
-      // ============================================================
-      {
-          "label": "4. [Build] Master (Full)",
-          "type": "shell",
-          "command": "go build",
-          "args": [
-              "-o",
-              "${workspaceFolder}/master${exe}", // 自动适配 .exe
-              "./cmd/master/main.go"
-          ],
-          "group": {
-              "kind": "build",
-              "isDefault": true
-          },
-          "dependsOn": "2. [Build] Web Frontend (Dist)", // 强依赖前端构建
-          "problemMatcher": "$go",
-          "detail": "编译 Master (包含前端 Embed 资源)"
-      },
-      {
-          "label": "4. [Build] Master (Fast)",
-          "type": "shell",
-          "command": "go build",
-          "args": [
-              "-o",
-              "${workspaceFolder}/master${exe}",
-              "./cmd/master/main.go"
-          ],
-          "group": "build",
-          "problemMatcher": "$go",
-          "detail": "仅编译 Master Go 代码 (不重新构建前端，开发用)"
-      },
-      {
-          "label": "5. [Build] Worker",
-          "type": "shell",
-          "command": "go build",
-          "args": [
-              "-o",
-              "${workspaceFolder}/worker${exe}",
-              "./cmd/worker/main.go"
-          ],
-          "group": "build",
-          "problemMatcher": "$go",
-          "detail": "编译 Worker Agent"
-      },
-      {
-          "label": "6. [Build] Demo App",
-          "type": "shell",
-          "command": "go build",
-          "args": [
-              "-o",
-              "${workspaceFolder}/demo-app${exe}",
-              "./cmd/demo-app/main.go"
-          ],
-          "group": "build",
-          "problemMatcher": "$go",
-          "detail": "编译测试用的 Demo App"
-      },
+        // ============================================================
+        // 2. 主控台前端 (Web Dashboard)
+        // ============================================================
+        {
+            "label": "2.0 [Dev] Web Dashboard",
+            "type": "shell",
+            "command": "source ~/.nvm/nvm.sh && nvm use 22 && npm run dev",
+            "options": { "cwd": "${workspaceFolder}/web" },
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": { "regexp": "^$" },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "VITE v",
+                    "endsPattern": "Network:"
+                }
+            },
+            "detail": "启动主控台前端开发服务 (Vite)"
+        },
+        {
+            "label": "2.1 [Build] Web Dashboard",
+            "type": "shell",
+            "command": "source ~/.nvm/nvm.sh && nvm use 22 && npm run build",
+            "options": { "cwd": "${workspaceFolder}/web" },
+            "group": "build",
+            "detail": "构建主控台前端资源 (web/dist -> Master Embed)"
+        },
 
-      // ============================================================
-      // 3. 运行与测试 (Run & Test)
-      // ============================================================
-      {
-          "label": "7. [Run] Start Master",
-          "type": "shell",
-          "command": "${workspaceFolder}/master${exe}",
-          // "args": ["-port", ":8080"], // 如果需要传参可解注
-          "dependsOn": "4. [Build] Master (Fast)",
-          "problemMatcher": [],
-          "group": "test",
-          "detail": "启动 Master 服务"
-      },
-      {
-          "label": "8. [Run] Start Worker",
-          "type": "shell",
-          "command": "${workspaceFolder}/worker${exe}",
-          // "args": ["-port", "8081", "-master", "http://127.0.0.1:8080"],
-          "dependsOn": "5. [Build] Worker",
-          "problemMatcher": [],
-          "group": "test",
-          "detail": "启动 Worker 节点"
-      },
-      {
-          "label": "9. [Run] Mock Cluster (Stress Test)",
-          "type": "shell",
-          "command": "go run ./cmd/test-tool/mock_cluster.go",
-          "args": [
-              "-count", "200",
-              "-duration", "30s"
-          ],
-          "group": "test",
-          "detail": "启动 200 个模拟节点进行压力测试"
-      },
+        // ============================================================
+        // 3. 核心服务 (Master & Worker)
+        // ============================================================
+        {
+            "label": "3.0 [Build] Master (Full)",
+            "type": "shell",
+            "command": "go build -o ${workspaceFolder}/master${exe} ./cmd/master/main.go",
+            "group": { "kind": "build", "isDefault": true },
+            "dependsOn": ["2.1 [Build] Web Dashboard"],
+            "problemMatcher": "$go",
+            "detail": "构建 Master (包含最新的前端资源)"
+        },
+        {
+            "label": "3.1 [Build] Master (Fast)",
+            "type": "shell",
+            "command": "go build -o ${workspaceFolder}/master${exe} ./cmd/master/main.go",
+            "group": "build",
+            "problemMatcher": "$go",
+            "detail": "仅构建 Master Go 代码 (不重新构建前端)"
+        },
+        {
+            "label": "3.2 [Run] Master",
+            "type": "shell",
+            "command": "${workspaceFolder}/master${exe}",
+            "dependsOn": ["3.1 [Build] Master (Fast)"],
+            "group": "test",
+            "detail": "启动 Master 服务"
+        },
+        {
+            "label": "3.3 [Build] Worker",
+            "type": "shell",
+            "command": "go build -o ${workspaceFolder}/worker${exe} ./cmd/worker/main.go",
+            "group": "build",
+            "problemMatcher": "$go",
+            "detail": "构建 Worker Agent"
+        },
+        {
+            "label": "3.4 [Run] Worker",
+            "type": "shell",
+            "command": "${workspaceFolder}/worker${exe}",
+            // "args": ["-port", "8081"], // 可选参数
+            "dependsOn": ["3.3 [Build] Worker"],
+            "group": "test",
+            "detail": "启动 Worker 节点"
+        },
 
-      // ============================================================
-      // 4. 环境清理 (Clean Up) - 跨平台适配
-      // ============================================================
-      {
-          "label": "0. [Clean] Reset Environment",
-          "type": "shell",
-          "group": "none",
-          "detail": "删除数据库、上传文件、实例目录及编译产物",
-          "windows": {
-              "command": "del /q ops_data.db master.exe worker.exe demo-app.exe & rmdir /s /q uploads instances"
-          },
-          "linux": {
-              "command": "rm -rf ops_data.db master worker demo-app uploads/ instances/"
-          },
-          "osx": {
-              "command": "rm -rf ops_data.db master worker demo-app uploads/ instances/"
-          }
-      },
-      
-      // ============================================================
-      // 5. 辅助工具
-      // ============================================================
-      {
-          "label": "Go Mod Tidy",
-          "type": "shell",
-          "command": "go mod tidy",
-          "group": "none"
-      }
-  ],
-  
-  // 定义变量，自动处理 Windows 下的 .exe 后缀
-  "inputs": [],
-  "options": {
-      "env": {
-          // 设置 Go 代理，确保国内环境能下载依赖
-          "GOPROXY": "https://goproxy.cn,direct"
-      }
-  },
-  
-  // Windows 特定配置：自动添加 .exe 后缀变量
-  "windows": {
-      "options": {
-          "env": {
-              "exe": ".exe"
-          }
-      }
-  },
-  // Linux/Mac 特定配置：后缀为空
-  "linux": {
-      "options": {
-          "env": {
-              "exe": ""
-          }
-      }
-  },
-  "osx": {
-      "options": {
-          "env": {
-              "exe": ""
-          }
-      }
-  }
+        // ============================================================
+        // 4. 工具链 (Tools: Packer & Runner)
+        // ============================================================
+        {
+            "label": "4.0 [Build] Packer CLI",
+            "type": "shell",
+            "command": "go build -o ${workspaceFolder}/pack-tool${exe} ./cmd/pack-tool/main.go",
+            "group": "build",
+            "problemMatcher": "$go",
+            "detail": "构建命令行版打包工具"
+        },
+        {
+            "label": "4.1 [Build] Runner (Standalone)",
+            "type": "shell",
+            "command": "go build -o ${workspaceFolder}/runner${exe} ./cmd/runner/main.go",
+            "group": "build",
+            "problemMatcher": "$go",
+            "detail": "构建离线运行器 (Runner)"
+        },
+        {
+            "label": "4.2 [Dev] Packer GUI (Wails)",
+            "type": "shell",
+            "command": "wails dev",
+            "options": {
+                "cwd": "${workspaceFolder}/ops-packer",
+                "env": { "CGO_ENABLED": "1" } // Wails 需要 CGO
+            },
+            "group": "test",
+            "detail": "调试打包工具界面版"
+        },
+        {
+            "label": "4.3 [Build] Packer GUI (Wails)",
+            "type": "shell",
+            "command": "wails build",
+            "options": {
+                "cwd": "${workspaceFolder}/ops-packer",
+                "env": { "CGO_ENABLED": "1" }
+            },
+            "group": "build",
+            "detail": "构建打包工具界面版 (产物在 ops-packer/build/bin)"
+        },
+
+        // ============================================================
+        // 5. 测试与辅助 (Testing & Utils)
+        // ============================================================
+        {
+            "label": "5.0 [Test] Mock Cluster",
+            "type": "shell",
+            "command": "go run ./cmd/test-tool/mock_cluster.go -count 200 -duration 60s",
+            "group": "test",
+            "detail": "启动 200 个模拟节点进行压力测试"
+        },
+        {
+            "label": "5.1 [Build] Demo Apps",
+            "type": "shell",
+            "command": "go build -o ${workspaceFolder}/demo-app${exe} ./cmd/demo-app/main.go",
+            "group": "build",
+            "detail": "构建测试用的 Demo 应用"
+        },
+        
+        // ============================================================
+        // 6. 环境清理 (Cleanup) - 跨平台适配
+        // ============================================================
+        {
+            "label": "9.0 [Clean] All Artifacts",
+            "type": "shell",
+            "windows": {
+                "command": "del /q master.exe worker.exe pack-tool.exe runner.exe demo-app.exe ops_data.db & rmdir /s /q uploads instances backups"
+            },
+            "linux": {
+                "command": "rm -rf master worker pack-tool runner demo-app ops_data.db uploads/ instances/ backups/"
+            },
+            "osx": {
+                "command": "rm -rf master worker pack-tool runner demo-app ops_data.db uploads/ instances/ backups/"
+            },
+            "group": "none",
+            "detail": "清理所有编译产物、数据库及运行时目录"
+        }
+    ],
+    "inputs": []
 }
