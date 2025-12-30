@@ -76,6 +76,13 @@ func LoadWorkerConfig(cfgFile string) (*WorkerConfig, error) {
 	v.SetDefault("logic.http_client_timeout", "10s")
 	v.SetDefault("auth.secret_key", "ops-system-secret-key")
 
+	v.SetDefault("log_rotate.max_size", 50)   // 默认 50MB
+	v.SetDefault("log_rotate.max_backups", 5) // 默认 5 个文件
+	v.SetDefault("log_rotate.max_age", 7)     // 默认 7 天
+	v.SetDefault("log_rotate.compress", true) // 默认压缩
+	// 默认为 true (新文件模式)，改为 false 则追加模式
+	v.SetDefault("log_rotate.rotate_on_start", true)
+
 	v.SetEnvPrefix("OPS_WORKER")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()

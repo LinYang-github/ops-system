@@ -17,24 +17,28 @@ import (
 	"syscall"
 	"time"
 
+	"ops-system/pkg/config"
 	"ops-system/pkg/protocol"
 
 	"github.com/shirou/gopsutil/v3/process"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // 全局变量
 var (
-	baseWorkDir string // .../instances
-	pkgCacheDir string // .../instances/pkg_cache
+	baseWorkDir  string // .../instances
+	pkgCacheDir  string // .../instances/pkg_cache
+	logRotateCfg config.LogRotateConfig
 )
 
 // 下载锁
 var downloadLocks sync.Map
 
 // Init 初始化基础目录
-func Init(dir string) {
+func Init(dir string, cfg config.LogRotateConfig) {
 	baseWorkDir = dir
 	pkgCacheDir = filepath.Join(baseWorkDir, "pkg_cache")
+	logRotateCfg = cfg
 
 	os.MkdirAll(baseWorkDir, 0755)
 	os.MkdirAll(pkgCacheDir, 0755)
@@ -319,16 +323,42 @@ func StartProcess(workDir string) StartProcessResult {
 	cmd.Env = buildEnv(m.Env)
 
 	// 日志重定向
-	logFile, _ := os.Create(filepath.Join(workDir, "app.log"))
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	logPath := filepath.Join(workDir, "app.log")
+
+	logger := &lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    logRotateCfg.MaxSize,
+		MaxBackups: logRotateCfg.MaxBackups,
+		MaxAge:     logRotateCfg.MaxAge,
+		Compress:   logRotateCfg.Compress,
+		LocalTime:  true,
+	}
+
+	// 【核心逻辑】如果配置了“每次启动生成新文件”
+	if logRotateCfg.RotateOnStart {
+		// 先检查文件是否存在，如果文件不存在就不需要 Rotate (否则会生成空的备份文件)
+		if _, err := os.Stat(logPath); err == nil {
+			// Rotate 会做两件事：
+			// 1. 把现有的 app.log 重命名为 app-2023-xx-xx...log (归档)
+			// 2. 准备创建一个新的 app.log 用于写入
+			if err := logger.Rotate(); err != nil {
+				// 如果轮转失败，打印日志但继续运行（降级为追加模式）
+				fmt.Printf("[Warn] Failed to rotate log on start: %v\n", err)
+			}
+		}
+	}
+
+	// 注意：lumberjack 实现了 io.Writer，可以直接赋值给 Stdout
+	cmd.Stdout = logger
+	cmd.Stderr = logger
 
 	// 【平台钩子】启动前准备 (Setsid / CreationFlags)
 	prepareProcess(cmd)
 
 	// 5. 执行启动
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
+		// 注意：如果是 logger，通常不需要显式 Close，除非你想强制刷新
+		// logger.Close()
 		return StartProcessResult{Status: "error", Error: fmt.Errorf("start failed: %v", err)}
 	}
 

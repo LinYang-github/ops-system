@@ -45,11 +45,12 @@ type LogicConfig struct {
 // ================= Worker Config =================
 
 type WorkerConfig struct {
-	Server  WorkerServerConfig `mapstructure:"server"`
-	Connect ConnectConfig      `mapstructure:"connect"`
-	Logic   WorkerLogicConfig  `mapstructure:"logic"`
-	Log     LogConfig          `mapstructure:"log"`
-	Auth    AuthConfig         `mapstructure:"auth"`
+	Server    WorkerServerConfig `mapstructure:"server"`
+	Connect   ConnectConfig      `mapstructure:"connect"`
+	Logic     WorkerLogicConfig  `mapstructure:"logic"`
+	Log       LogConfig          `mapstructure:"log"`
+	LogRotate LogRotateConfig    `mapstructure:"log_rotate"`
+	Auth      AuthConfig         `mapstructure:"auth"`
 }
 
 type WorkerServerConfig struct {
@@ -65,6 +66,14 @@ type WorkerLogicConfig struct {
 	HeartbeatInterval time.Duration `mapstructure:"heartbeat_interval"` // 心跳间隔 (默认 5s)
 	MonitorInterval   time.Duration `mapstructure:"monitor_interval"`   // 监控采集间隔 (默认 3s)
 	HTTPClientTimeout time.Duration `mapstructure:"http_client_timeout"`
+}
+
+type LogRotateConfig struct {
+	MaxSize       int  `mapstructure:"max_size"`        // MB
+	MaxBackups    int  `mapstructure:"max_backups"`     // 个数
+	MaxAge        int  `mapstructure:"max_age"`         // 天数
+	Compress      bool `mapstructure:"compress"`        // 是否压缩
+	RotateOnStart bool `mapstructure:"rotate_on_start"` // 启动时是否强制轮转
 }
 
 // ================= Common =================

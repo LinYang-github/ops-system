@@ -77,7 +77,7 @@ func main() {
 	pkgUtils.InitHTTPClient(cfg.Logic.HTTPClientTimeout, cfg.Auth.SecretKey)
 
 	// 6. 初始化业务模块
-	executor.Init(absWorkDir)
+	executor.Init(absWorkDir, cfg.LogRotate)
 	handler.InitHandler(cfg.Connect.MasterURL)
 
 	listenAddr := fmt.Sprintf(":%d", cfg.Server.Port)

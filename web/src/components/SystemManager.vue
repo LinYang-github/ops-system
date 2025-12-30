@@ -3,7 +3,7 @@
     
     <div class="sys-content" v-loading="loading">
       <template v-if="currentSystem">
-        <!-- Header -->
+        <!-- 1. Header -->
         <div class="content-header">
           <div class="header-left">
             <h2 class="sys-title">{{ currentSystem.name }}</h2>
@@ -45,14 +45,12 @@
             
             <el-button icon="Refresh" size="small" circle @click="refreshData" />
             
-            <!-- 更多操作下拉菜单 -->
             <el-dropdown trigger="click" @command="handleCommand" style="margin-left: 8px">
               <el-button link size="small"><el-icon><MoreFilled /></el-icon></el-button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <!-- 导出按钮 -->
                   <el-dropdown-item command="export" icon="Download">导出单机版</el-dropdown-item>
-                  <el-dropdown-item command="delete" icon="Delete" style="color: var(--el-color-danger)" divided>删除系统</el-dropdown-item>
+                  <el-dropdown-item command="delete" style="color: var(--el-color-danger)">删除系统</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -71,7 +69,7 @@
             stripe
             class="custom-table"
           >
-            <!-- 1. 树结构列 -->
+            <!-- 1. 树结构列：名称/ID (关键修复：class-name="tree-col") -->
             <el-table-column 
               label="组件名称 / 实例 ID" 
               min-width="260" 
@@ -80,12 +78,17 @@
             >
               <template #default="scope">
                 <div class="cell-content">
+                  <!-- 组件行 -->
                   <template v-if="scope.row.rowType === 'module'">
+                    <el-tag size="small" effect="dark" style="margin-right: 8px">{{ scope.row.start_order }}</el-tag>
                     <span class="module-name">{{ scope.row.module_name }}</span>
                     <span class="instance-count" v-if="scope.row.children.length > 0">({{ scope.row.children.length }})</span>
+                    
                     <span v-if="scope.row.is_external" class="tag-external">EXTERNAL</span>
                     <span v-else class="pkg-hint">{{ scope.row.package_name }} v{{ scope.row.package_version }}</span>
                   </template>
+                  
+                  <!-- 实例行 -->
                   <template v-else>
                     <span class="inst-id">{{ scope.row.id }}</span>
                   </template>
@@ -93,13 +96,16 @@
               </template>
             </el-table-column>
 
-            <!-- 其他列 -->
+            <!-- 2. 节点IP -->
             <el-table-column v-if="colConf.ip" label="节点 IP" width="140">
               <template #default="scope">
-                <span v-if="scope.row.rowType === 'instance'" class="mono-text text-primary">{{ scope.row.node_ip }}</span>
+                <span v-if="scope.row.rowType === 'instance'" class="mono-text text-primary">
+                  {{ scope.row.node_ip }}
+                </span>
               </template>
             </el-table-column>
 
+            <!-- 3. 状态 -->
             <el-table-column v-if="colConf.status" label="状态" width="90">
               <template #default="scope">
                 <div v-if="scope.row.rowType === 'instance'" class="status-cell">
@@ -109,50 +115,77 @@
               </template>
             </el-table-column>
 
+            <!-- 4. PID -->
             <el-table-column v-if="colConf.pid" label="PID" width="80" align="right">
               <template #default="scope">
-                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text">{{ scope.row.pid }}</span>
+                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text">
+                  {{ scope.row.pid }}
+                </span>
                 <span v-else-if="scope.row.rowType === 'instance'" class="text-placeholder">-</span>
               </template>
             </el-table-column>
 
+            <!-- 5. 启动时间 -->
             <el-table-column v-if="colConf.uptime" label="启动时间" width="160" class-name="col-no-wrap">
               <template #default="scope">
-                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text text-gray text-xs">{{ formatTime(scope.row.uptime) }}</span>
+                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text text-gray text-xs">
+                  {{ formatTime(scope.row.uptime) }}
+                </span>
               </template>
             </el-table-column>
 
+            <!-- 6. 监控指标 -->
             <el-table-column v-if="colConf.cpu" label="CPU" width="80" align="right">
               <template #default="scope">
-                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text">{{ (scope.row.cpu_usage || 0).toFixed(1) }}%</span>
+                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text">
+                  {{ (scope.row.cpu_usage || 0).toFixed(1) }}%
+                </span>
               </template>
             </el-table-column>
 
             <el-table-column v-if="colConf.mem" label="内存" width="90" align="right">
               <template #default="scope">
-                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text">{{ (scope.row.mem_usage || 0) }} MB</span>
+                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text">
+                  {{ (scope.row.mem_usage || 0) }} MB
+                </span>
               </template>
             </el-table-column>
 
             <el-table-column v-if="colConf.io" label="IO R/W" width="130" align="right">
               <template #default="scope">
-                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text text-gray text-xs">{{ scope.row.io_read }}/{{ scope.row.io_write }} KB</span>
+                <span v-if="scope.row.rowType === 'instance' && scope.row.status === 'running'" class="mono-text text-gray text-xs">
+                  {{ scope.row.io_read }}/{{ scope.row.io_write }} KB
+                </span>
               </template>
             </el-table-column>
 
+            <!-- 7. 操作 -->
             <el-table-column label="操作" width="150" fixed="right" align="right">
               <template #default="scope">
+                <!-- 组件操作 -->
                 <div v-if="scope.row.rowType === 'module'">
                   <el-button v-if="!scope.row.is_external" link type="primary" size="small" @click="openDeployDialog(scope.row)">部署</el-button>
                   <el-popconfirm v-if="!scope.row.is_external" title="删除定义?" @confirm="deleteModule(scope.row.id)">
                     <template #reference><el-button link type="info" size="small">删除</el-button></template>
                   </el-popconfirm>
                 </div>
+                <!-- 实例操作 -->
                 <div v-else>
-                  <el-button v-if="scope.row.status !== 'running'" link type="success" size="small" @click="handleAction(scope.row.id, 'start')">启动</el-button>
-                  <el-button v-if="scope.row.status === 'running'" link type="warning" size="small" @click="handleAction(scope.row.id, 'stop')">停止</el-button>
+                  <el-button 
+                    v-if="scope.row.status !== 'running'"
+                    link type="success" size="small"
+                    @click="handleAction(scope.row.id, 'start')"
+                  >启动</el-button>
+                  <el-button 
+                    v-if="scope.row.status === 'running'"
+                    link type="warning" size="small"
+                    @click="handleAction(scope.row.id, 'stop')"
+                  >停止</el-button>
+                  <el-button link type="primary" size="small" icon="Document" @click="openLog(scope.row)">日志</el-button>
                   <el-dropdown trigger="click" size="small" @command="(cmd) => handleInstanceCommand(cmd, scope.row.id)">
-                    <span class="el-dropdown-link action-more"><el-icon><More /></el-icon></span>
+                    <span class="el-dropdown-link action-more">
+                      <el-icon><More /></el-icon>
+                    </span>
                     <template #dropdown>
                       <el-dropdown-menu>
                         <el-dropdown-item command="destroy" style="color: var(--el-color-danger)">销毁实例</el-dropdown-item>
@@ -168,47 +201,115 @@
       <el-empty v-else description="请选择系统" />
     </div>
 
-    <!-- 弹窗1-3: 标准/部署/纳管 -->
-    <el-dialog v-model="addModDialog.visible" title="添加标准组件" width="350px">
-        <el-form label-width="70px" size="small">
-            <el-form-item label="名称"><el-input v-model="addModDialog.moduleName" /></el-form-item>
-            <el-form-item label="服务包">
-                <el-select v-model="addModDialog.selectedPkg" @change="updateModVersions" style="width:100%">
-                    <el-option v-for="p in packages" :key="p.name" :label="p.name" :value="p" />
-                </el-select>
+    <!-- 弹窗1：添加标准组件 -->
+    <el-dialog v-model="addModDialog.visible" title="添加服务组件" width="600px">
+      <el-form label-width="100px" :model="addModDialog" size="small">
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="组件名称">
+              <el-input v-model="addModDialog.moduleName" placeholder="例如: 核心API" />
             </el-form-item>
-            <el-form-item label="版本">
-                <el-select v-model="addModDialog.version" style="width:100%">
-                    <el-option v-for="v in addModDialog.versions" :key="v" :label="v" :value="v" />
-                </el-select>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="启动顺序">
+               <el-input-number v-model="addModDialog.startOrder" :min="1" :max="99" />
+               <div style="font-size:12px; color:#999">越小越先启动</div>
             </el-form-item>
-        </el-form>
-        <template #footer><el-button type="primary" size="small" @click="addModule">确定</el-button></template>
+          </el-col>
+        </el-row>
+
+        <el-form-item label="服务包">
+           <el-select v-model="addModDialog.selectedPkg" @change="updateModVersions" style="width:100%">
+             <el-option v-for="p in packages" :key="p.name" :label="p.name" :value="p" />
+           </el-select>
+        </el-form-item>
+        <el-form-item label="版本">
+           <el-select v-model="addModDialog.version" style="width:100%">
+             <el-option v-for="v in addModDialog.versions" :key="v" :label="v" :value="v" />
+           </el-select>
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="addModDialog.desc" placeholder="备注信息" />
+        </el-form-item>
+
+        <el-divider content-position="left">健康检查覆盖 (可选)</el-divider>
+        <div style="margin-bottom: 10px; color: #999; font-size: 12px; padding-left: 20px;">
+          若不填写，将使用服务包中 service.json 的默认配置。
+        </div>
+
+        <el-row :gutter="20">
+          <el-col :span="8">
+            <el-form-item label="检测类型">
+               <el-select v-model="addModDialog.readinessType" clearable placeholder="默认">
+                 <el-option label="TCP端口" value="tcp" />
+                 <el-option label="HTTP请求" value="http" />
+                 <el-option label="固定延时" value="time" />
+               </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="16">
+            <el-form-item label="检测目标">
+               <el-input v-model="addModDialog.readinessTarget" placeholder="e.g. :8080 or /health" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" @click="addModule">确定</el-button>
+      </template>
     </el-dialog>
 
-    <el-dialog v-model="deployDialog.visible" title="部署实例" width="350px">
-        <el-form label-width="70px" size="small">
-            <el-form-item label="节点">
-                <el-select v-model="deployDialog.nodeIP" style="width:100%" placeholder="请选择在线节点">
-                    <el-option label="🤖 自动选择 (负载最低)" value="auto" style="font-weight: bold; color: var(--el-color-primary);" />
-                    <el-option v-for="n in availableNodes" :key="n.ip" :label="`${n.hostname} (${n.ip})`" :value="n.ip" />
-                </el-select>
-            </el-form-item>
-        </el-form>
-        <template #footer><el-button type="primary" size="small" @click="deployInstance" :loading="deployDialog.loading">部署</el-button></template>
+    <!-- 弹窗2：部署实例 -->
+    <el-dialog v-model="deployDialog.visible" title="部署实例" width="400px">
+      <div class="deploy-confirm-info">
+        <p>服务：<b>{{ deployDialog.serviceName }}</b> (v{{ deployDialog.version }})</p>
+      </div>
+      <el-form label-width="80px">
+        <el-form-item label="目标节点">
+           <el-select v-model="deployDialog.nodeIP" placeholder="请选择或自动调度" style="width: 100%">
+             
+             <!-- 选项 1: 自动选择 -->
+             <el-option 
+                label="🤖 自动选择 (负载最低)" 
+                value="auto" 
+                style="font-weight: bold; color: var(--el-color-primary);"
+             />
+
+             <!-- 选项 2: 在线节点列表 -->
+             <!-- 【修复点】这里必须使用 availableNodes -->
+             <el-option 
+               v-for="n in availableNodes" 
+               :key="n.ip" 
+               :label="`${n.hostname} (${n.ip})`" 
+               :value="n.ip" 
+             />
+             
+           </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" @click="deployInstance" :loading="deployDialog.loading">确定部署</el-button>
+      </template>
     </el-dialog>
 
+    <!-- 弹窗3：纳管外部服务 -->
     <el-dialog v-model="adoptDialog.visible" title="纳管外部服务" width="500px">
       <el-form label-width="100px" size="small" :model="adoptForm">
-        <el-form-item label="服务名称"><el-input v-model="adoptForm.name" placeholder="例如: 遗留网关" /></el-form-item>
+        <el-form-item label="服务名称">
+          <el-input v-model="adoptForm.name" placeholder="例如: 遗留网关" />
+        </el-form-item>
         <el-form-item label="所在节点">
            <el-select v-model="adoptForm.nodeIP" placeholder="选择目标服务器" style="width:100%">
              <el-option v-for="n in availableNodes" :key="n.ip" :label="`${n.hostname} (${n.ip})`" :value="n.ip" />
            </el-select>
         </el-form-item>
         <el-divider content-position="left">运行配置</el-divider>
-        <el-form-item label="工作目录"><el-input v-model="adoptForm.workDir" placeholder="绝对路径，如 /opt/nginx" /></el-form-item>
-        <el-form-item label="启动命令"><el-input v-model="adoptForm.startCmd" placeholder="例如: ./nginx 或 start.bat" /></el-form-item>
+        <el-form-item label="工作目录">
+          <el-input v-model="adoptForm.workDir" placeholder="绝对路径，如 /opt/nginx" />
+        </el-form-item>
+        <el-form-item label="启动命令">
+          <el-input v-model="adoptForm.startCmd" placeholder="例如: ./nginx 或 start.bat" />
+        </el-form-item>
         <el-form-item label="进程策略">
           <el-radio-group v-model="adoptForm.pidStrategy">
             <el-radio label="spawn">直接启动 (EXE)</el-radio>
@@ -226,7 +327,6 @@
         <el-button type="primary" size="small" @click="registerExternal" :loading="adoptDialog.loading">确定纳管</el-button>
       </template>
     </el-dialog>
-
     <!-- 【新增】弹窗4：导出系统 -->
     <el-dialog v-model="exportDialog.visible" title="导出单机便携版" width="450px">
       <div class="export-body">
@@ -254,7 +354,11 @@
         </el-button>
       </template>
     </el-dialog>
-
+    <LogViewer 
+      v-model="logDialog.visible" 
+      :instance-id="logDialog.instId" 
+      :instance-name="logDialog.instName" 
+    />
   </div>
 </template>
 
@@ -262,8 +366,9 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, Refresh, ArrowDown, Setting, MoreFilled, More, Link, InfoFilled, VideoPlay, VideoPause, Loading, Download } from '@element-plus/icons-vue'
+import { Plus, Delete, Refresh, ArrowDown, Setting, MoreFilled, More, Link, InfoFilled, VideoPlay, VideoPause, Loading, Document, Download} from '@element-plus/icons-vue'
 import { wsStore } from '../store/wsStore'
+import LogViewer from './LogViewer.vue'
 
 const props = defineProps(['targetSystemId'])
 const emit = defineEmits(['refresh-systems'])
@@ -274,7 +379,12 @@ const batchLoading = ref(false)
 const fullData = ref([])
 const packages = ref([])
 
-const addModDialog = reactive({ visible: false, moduleName: '', selectedPkg: null, version: '', versions: [] })
+const addModDialog = reactive({
+  visible: false, 
+  moduleName: '', selectedPkg: null, version: '', versions: [], desc: '', 
+  startOrder: 1, 
+  readinessType: '', readinessTarget: ''
+})
 const deployDialog = reactive({ visible: false, targetModule: null, nodeIP: '', loading: false })
 const adoptDialog = reactive({ visible: false, loading: false })
 const adoptForm = reactive({ name: '', nodeIP: '', workDir: '', startCmd: '', stopCmd: '', pidStrategy: 'spawn', processName: '' })
@@ -297,13 +407,18 @@ const colConf = computed(() => {
   return conf
 })
 
-const availableNodes = computed(() => wsStore.nodes.filter(n => n.status === 'online'))
+// 获取在线节点用于下拉框
+const availableNodes = computed(() => {
+  return wsStore.nodes.filter(n => n.status === 'online')
+})
 
 let timer = null
 
+// --- 核心数据结构转换 ---
 const treeData = computed(() => {
   if (!currentSystem.value) return []
   
+  // 1. 标准组件
   const standardModules = currentSystem.value.modules.map(mod => {
     const instances = currentSystem.value.instances.filter(inst => 
       inst.service_name === mod.package_name && 
@@ -313,6 +428,7 @@ const treeData = computed(() => {
     return { ...mod, rowType: 'module', is_external: false, children: instances }
   })
 
+  // 2. 纳管组件聚合
   const externalInstances = currentSystem.value.instances.filter(inst => inst.service_version === 'external')
   const extGroups = {}
   externalInstances.forEach(inst => {
@@ -338,13 +454,19 @@ watch(() => props.targetSystemId, (newId) => {
   else currentSystem.value = null
 })
 
-// --- API 方法 ---
-
+// --- 接口调用实现 ---
+const logDialog = reactive({ visible: false, instId: '', instName: '' })
+    
+    const openLog = (row) => {
+      logDialog.instId = row.id
+      logDialog.instName = row.service_name
+      logDialog.visible = true
+    }
 const refreshData = async () => {
   if (!props.targetSystemId) return
   try {
-    const data = await request.get('/api/systems')
-    fullData.value = data || []
+    const res = await request.get('/api/systems')
+    fullData.value = res || []
     const found = fullData.value.find(s => s.id === props.targetSystemId)
     currentSystem.value = found || null
   } catch (e) {} finally { loading.value = false }
@@ -375,11 +497,10 @@ const handleBatchAction = async (action) => {
     })
     ElMessage.success('批量指令已下发')
     setTimeout(refreshData, 1000)
-  } catch(e) {}
+  } catch(e) { ElMessage.error('失败: ' + e.message) }
   finally { batchLoading.value = false }
 }
 
-// 下拉菜单
 const handleCommand = (cmd) => {
   if (cmd === 'delete') {
     ElMessageBox.confirm('确定删除系统?', '警告', { type: 'warning' }).then(async () => {
@@ -387,9 +508,6 @@ const handleCommand = (cmd) => {
         ElMessage.success('已删除')
         emit('refresh-systems')
     })
-  } else if (cmd === 'export') {
-    // 【修复】调用导出弹窗
-    openExportDialog()
   }
 }
 
@@ -397,21 +515,43 @@ const handleInstanceCommand = (cmd, id) => {
   if (cmd === 'destroy') {
     ElMessageBox.confirm('确定销毁? 文件将删除', '警告', { type: 'warning' })
       .then(() => handleAction(id, 'destroy'))
+  } else if (cmd === 'export') {
+    // 【修复】调用导出弹窗
+    openExportDialog()
   }
 }
 
 // 模组 & 部署 & 纳管
-const openAddModuleDialog = async () => { addModDialog.visible = true; const data = await request.get('/api/packages'); packages.value = data || [] }
+const openAddModuleDialog = async () => { addModDialog.visible = true; const res = await request.get('/api/packages'); packages.value = res || [] }
 const updateModVersions = () => { if(addModDialog.selectedPkg) addModDialog.versions = addModDialog.selectedPkg.versions; addModDialog.version = addModDialog.versions[0]; if(!addModDialog.moduleName) addModDialog.moduleName = addModDialog.selectedPkg.name }
-const addModule = async () => { await request.post('/api/systems/module/add', { system_id: currentSystem.value.id, module_name: addModDialog.moduleName, package_name: addModDialog.selectedPkg.name, package_version: addModDialog.version, description: addModDialog.desc }); addModDialog.visible = false; refreshData() }
+const addModule = async () => {
+  await request.post('/api/systems/module/add', {
+    system_id: currentSystem.value.id,
+    module_name: addModDialog.moduleName,
+    package_name: addModDialog.selectedPkg.name,
+    package_version: addModDialog.version,
+    description: addModDialog.desc,
+    // 新增字段
+    start_order: addModDialog.startOrder,
+    readiness_type: addModDialog.readinessType,
+    readiness_target: addModDialog.readinessTarget,
+    readiness_timeout: 30 // 默认 30s
+  })
+  addModDialog.visible = false
+  refreshData()
+}
 const deleteModule = async (id) => { await request.post('/api/systems/module/delete', { id }); refreshData() }
 
-const openDeployDialog = async (mod) => { 
-  deployDialog.visible = true; 
-  deployDialog.targetModule = mod 
+// 部署
+const openDeployDialog = async (mod) => {
+  deployDialog.visible = true
+  deployDialog.targetModule = mod
+  deployDialog.serviceName = mod.package_name
+  deployDialog.version = mod.package_version
+  
+  // 设置默认值为 auto
   deployDialog.nodeIP = 'auto' 
 }
-
 const deployInstance = async () => { 
   if(!deployDialog.nodeIP) return ElMessage.warning('请选择节点')
   deployDialog.loading = true; 
@@ -425,10 +565,11 @@ const deployInstance = async () => {
     ElMessage.success('指令已发送')
     deployDialog.visible = false; 
     setTimeout(refreshData, 500) 
-  } catch(e) {} 
+  } catch(e) { ElMessage.error(e.message) } 
   finally { deployDialog.loading = false } 
 }
 
+// 纳管
 const openAdoptDialog = () => {
   adoptDialog.visible = true
   adoptForm.name = ''
@@ -443,7 +584,7 @@ const registerExternal = async () => {
   if(!adoptForm.name || !adoptForm.nodeIP || !adoptForm.startCmd) return ElMessage.warning('请补全信息')
   adoptDialog.loading = true
   try {
-    await request.post('/api/deploy/external', {
+    await request.post('/api/deploy/external', { // 确保后端有此接口路由
       system_id: currentSystem.value.id,
       node_ip: adoptForm.nodeIP,
       config: {
@@ -458,11 +599,10 @@ const registerExternal = async () => {
     ElMessage.success('纳管成功')
     adoptDialog.visible = false
     refreshData()
-  } catch(e) {}
+  } catch(e) { ElMessage.error(e.message) }
   finally { adoptDialog.loading = false }
 }
 
-// 导出
 const openExportDialog = () => {
   exportDialog.visible = true
   exportDialog.os = 'linux'
@@ -521,12 +661,15 @@ const confirmExport = async () => {
   }
 }
 
+// 启停销毁
 const handleAction = async (id, action) => { 
   try {
     await request.post('/api/instance/action', { instance_id: id, action }); 
     ElMessage.success('指令已发送')
     if(action==='destroy') setTimeout(refreshData, 500) 
-  } catch(e) {}
+  } catch(e) {
+    ElMessage.error('操作失败: ' + e.message)
+  }
 }
 
 const getStatusType = (s) => s==='running'?'success':(s==='stopped'?'info':(s==='deploying'?'primary':'danger'))
@@ -553,9 +696,16 @@ onUnmounted(() => clearInterval(timer))
 /* 表格容器 */
 .table-card { border: none; flex: 1; display: flex; flex-direction: column; overflow: hidden; background: transparent; }
 
+/* 样式修复：移除竖线，只保留横线 */
 :deep(.custom-table .el-table__inner-wrapper::before) { display: none; }
 :deep(.custom-table .el-table__cell) { padding: 6px 0; }
-:deep(.tree-col .cell) { display: flex; align-items: center; }
+
+/* 关键修复：树形展开图标对齐 */
+/* Element Plus 的展开图标在 .cell 内部，使用 flex 对齐 */
+:deep(.tree-col .cell) {
+  display: flex;
+  align-items: center;
+}
 
 .cell-content { display: flex; align-items: center; flex: 1; min-width: 0; }
 .module-name { font-weight: 700; font-size: 13px; color: var(--el-text-color-primary); }
@@ -582,6 +732,4 @@ onUnmounted(() => clearInterval(timer))
 .action-more { cursor: pointer; color: var(--el-color-primary); font-size: 14px; margin-left: 4px; vertical-align: middle; }
 .col-setting { padding: 5px 12px; }
 :deep(.col-no-wrap .cell) { white-space: nowrap !important; }
-
-.export-body { padding: 10px; }
 </style>
