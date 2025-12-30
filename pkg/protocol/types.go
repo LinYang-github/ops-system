@@ -291,3 +291,23 @@ type HeartbeatResponse struct {
 	HeartbeatInterval int64 `json:"heartbeat_interval"` // 秒
 	MonitorInterval   int64 `json:"monitor_interval"`   // 秒
 }
+
+// RunnerManifest 离线运行清单
+type RunnerManifest struct {
+	SystemName string         `json:"system_name"`
+	ExportTime int64          `json:"export_time"`
+	Modules    []RunnerModule `json:"modules"`
+}
+
+type RunnerModule struct {
+	Name       string            `json:"name"`
+	WorkDir    string            `json:"work_dir"` // 相对路径 e.g. "services/redis"
+	Entrypoint string            `json:"entrypoint"`
+	Args       []string          `json:"args"`
+	Env        map[string]string `json:"env"`
+	StartOrder int               `json:"start_order"`
+
+	// 停止配置
+	StopEntrypoint string   `json:"stop_entrypoint"`
+	StopArgs       []string `json:"stop_args"`
+}

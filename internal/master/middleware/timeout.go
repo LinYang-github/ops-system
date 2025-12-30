@@ -30,7 +30,10 @@ func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 			if strings.HasPrefix(path, "/api/ws") ||
 				strings.HasPrefix(path, "/api/log/ws") ||
 				strings.HasPrefix(path, "/api/node/terminal") ||
-				strings.HasPrefix(path, "/api/instance/logs/stream") {
+				strings.HasPrefix(path, "/api/instance/logs/stream") ||
+				strings.HasPrefix(path, "/api/upload") ||
+				strings.HasPrefix(path, "/download/") ||
+				strings.HasPrefix(path, "/api/systems/export") {
 				next.ServeHTTP(w, r)
 				return
 			}

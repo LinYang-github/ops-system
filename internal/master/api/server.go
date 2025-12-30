@@ -30,6 +30,7 @@ var (
 	nodeManager   *manager.NodeManager
 	configManager *manager.ConfigManager
 	backupManager *manager.BackupManager
+	exportManager *manager.ExportManager
 	monitorStore  *monitor.MemoryTSDB
 	alertManager  *manager.AlertManager
 )
@@ -94,6 +95,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	pkgManager = manager.NewPackageManager(database, storeProvider) // 传入 DB 和 Storage
 	configManager = manager.NewConfigManager(database)
 	backupManager = manager.NewBackupManager(database, cfg.Storage.UploadDir)
+	exportManager = manager.NewExportManager(sysManager, pkgManager, instManager, cfg.Storage.UploadDir)
 
 	// 初始 NodeManager (使用 CLI/Config 中的默认阈值)
 	nodeManager = manager.NewNodeManager(database, monitorStore, cfg.Logic.NodeOfflineThreshold)
@@ -150,6 +152,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		configManager,
 		alertManager,
 		backupManager,
+		exportManager,
 		monitorStore,
 		sched,
 		cfg.Auth.SecretKey, // 传入 Secret 用于登录接口
@@ -168,21 +171,30 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	// 中间件链式组装
 	// =========================================================
 
+	// 1. 起点是路由器 (Mux)
 	var handler http.Handler = mux
 
-	// 1. 鉴权中间件 (Auth)
+	// 2. 包裹鉴权中间件 (Auth)
+	// AuthMiddleware 接收 handler，返回包裹后的 handler
 	handler = middleware.AuthMiddleware(cfg.Auth.SecretKey)(handler)
 
-	// 2. 超时中间件 (Timeout)
-	if cfg.Server.APITimeout > 0 {
+	// 3. 包裹超时中间件 (Timeout)
+	// 只有当配置了超时时间才包裹
+	// 注意：这里一定要确保 handler 不为 nil (上面已经赋值了，所以是安全的)
+	if cfg.Server.APITimeout > 0 { // 假设你在 config 中定义了 APITimeout
 		timeoutDuration := time.Duration(cfg.Server.APITimeout) * time.Second
+		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
+	} else if cfg.Logic.HTTPClientTimeout > 0 {
+		// 兼容逻辑：如果 Server.APITimeout 没配，暂用 HTTPClientTimeout 或默认值
+		// 建议在 config/loader.go 里给 Server.APITimeout 一个默认值 10
+		timeoutDuration := time.Duration(cfg.Logic.HTTPClientTimeout) * time.Second
 		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
 	}
 
 	server := &http.Server{
 		Addr:         cfg.Server.Port,
-		Handler:      handler,
-		ReadTimeout:  0, // 必须为 0 以支持大文件上传和 WebSocket
+		Handler:      handler, // 使用最终组装好的 Handler
+		ReadTimeout:  0,       // 必须为 0，否则大文件/WS 会断
 		WriteTimeout: 0,
 	}
 
@@ -208,6 +220,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/systems/delete", h.DeleteSystem)
 	mux.HandleFunc("/api/systems/module/add", h.CreateSystemModule)
 	mux.HandleFunc("/api/systems/module/delete", h.DeleteSystemModule)
+	mux.HandleFunc("/api/systems/export", h.ExportSystem)
 
 	// --- Instance 运行相关 ---
 	mux.HandleFunc("/api/deploy", h.DeployInstance)

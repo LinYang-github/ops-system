@@ -18,6 +18,7 @@ type ServerHandler struct {
 	alertMgr     *manager.AlertManager
 	backupMgr    *manager.BackupManager
 	monitorStore *monitor.MemoryTSDB
+	exportMgr    *manager.ExportManager
 	scheduler    *scheduler.Scheduler
 	secretKey    string
 }
@@ -32,6 +33,7 @@ func NewServerHandler(
 	cfg *manager.ConfigManager,
 	alert *manager.AlertManager,
 	backup *manager.BackupManager,
+	export *manager.ExportManager,
 	monitor *monitor.MemoryTSDB,
 	scheduler *scheduler.Scheduler,
 	secretKey string,
@@ -45,6 +47,7 @@ func NewServerHandler(
 		configMgr:    cfg,
 		alertMgr:     alert,
 		backupMgr:    backup,
+		exportMgr:    export,
 		monitorStore: monitor,
 		scheduler:    scheduler,
 		secretKey:    secretKey,

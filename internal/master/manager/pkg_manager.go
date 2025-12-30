@@ -211,3 +211,9 @@ func (pm *PackageManager) RegisterPackageMetadata(manifest *protocol.ServiceMani
 
 	return nil
 }
+
+// GetPackageStream 获取服务包的原始文件流 (用于导出功能)
+func (pm *PackageManager) GetPackageStream(name, version string) (io.ReadCloser, error) {
+	key := filepath.Join(name, fmt.Sprintf("%s.zip", version))
+	return pm.store.Get(key)
+}
