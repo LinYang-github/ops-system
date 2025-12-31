@@ -30,6 +30,8 @@ func StartWorkerServer(port string) {
 	http.HandleFunc("/api/instance/action", handleInstanceAction) // 处理实例启停
 	http.HandleFunc("/api/external/register", handleRegisterExternal)
 	http.HandleFunc("/api/maintenance/cleanup_cache", handleCleanupCache)
+	http.HandleFunc("/api/maintenance/scan_orphans", handleScanOrphans)
+	http.HandleFunc("/api/maintenance/delete_orphans", handleDeleteOrphans)
 
 	http.HandleFunc("/api/log/ws", handleLogStream)
 	http.HandleFunc("/api/log/files", handleGetLogFiles)
@@ -254,4 +256,44 @@ func handleCleanupCache(w http.ResponseWriter, r *http.Request) {
 		"msg":  "success",
 		"data": result,
 	})
+}
+
+func handleScanOrphans(w http.ResponseWriter, r *http.Request) {
+	var req protocol.OrphanScanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400)
+		return
+	}
+
+	// 转为 Map 加速查找
+	sysMap := make(map[string]bool)
+	for _, s := range req.ValidSystems {
+		sysMap[s] = true
+	}
+	instMap := make(map[string]bool)
+	for _, i := range req.ValidInstances {
+		instMap[i] = true
+	}
+
+	items, err := executor.ScanOrphans(sysMap, instMap)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(protocol.OrphanScanResponse{Items: items})
+}
+
+func handleDeleteOrphans(w http.ResponseWriter, r *http.Request) {
+	var req protocol.OrphanDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400)
+		return
+	}
+
+	count, _ := executor.DeleteOrphans(req.Items)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"deleted_count": count})
 }

@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"log"
+	"ops-system/pkg/protocol"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,4 +108,130 @@ func CleanupPackageCache(retainCount int) (CleanResult, error) {
 	}
 
 	return result, nil
+}
+
+// ScanOrphans 扫描孤儿资源
+// validSysMap: Key=SystemName
+// validInstMap: Key=InstanceID
+func ScanOrphans(validSysMap map[string]bool, validInstMap map[string]bool) ([]protocol.OrphanItem, error) {
+	var orphans []protocol.OrphanItem
+
+	if baseWorkDir == "" {
+		return nil, fmt.Errorf("executor not initialized")
+	}
+
+	// 1. 读取 instances 下的一级目录 (System 层)
+	sysEntries, err := os.ReadDir(baseWorkDir)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, sysEntry := range sysEntries {
+		if !sysEntry.IsDir() {
+			continue
+		}
+		sysName := sysEntry.Name()
+
+		// 排除保留目录
+		if sysName == "pkg_cache" || sysName == "external" || sysName == "lost+found" {
+			continue
+		}
+
+		// 检查系统是否合法
+		if !validSysMap[sysName] {
+			// 整个系统都是孤儿
+			size := getDirSize(filepath.Join(baseWorkDir, sysName))
+			orphans = append(orphans, protocol.OrphanItem{
+				Type:    "system_dir",
+				Path:    sysName,
+				AbsPath: filepath.Join(baseWorkDir, sysName),
+				Size:    size,
+			})
+			continue // 系统都不合法，下面的实例肯定也不合法，直接跳过子目录扫描
+		}
+
+		// 2. 如果系统合法，深入扫描二级目录 (Instance 层)
+		sysPath := filepath.Join(baseWorkDir, sysName)
+		instEntries, err := os.ReadDir(sysPath)
+		if err != nil {
+			continue
+		}
+
+		for _, instEntry := range instEntries {
+			if !instEntry.IsDir() {
+				continue
+			}
+			dirName := instEntry.Name() // e.g. "app_inst-123"
+
+			// 解析 InstanceID (取最后一个 "_" 之后的部分)
+			// 约定：目录名格式为 ServiceName_InstanceID
+			instID := dirName
+			idx := strings.LastIndex(dirName, "_")
+			if idx != -1 {
+				instID = dirName[idx+1:]
+			}
+
+			// 检查实例是否合法
+			if !validInstMap[instID] {
+				fullPath := filepath.Join(sysPath, dirName)
+
+				// 【安全检查】进程是否活着
+				running := isRunning(fullPath)
+				pid := 0
+				if running {
+					pid = getPID(fullPath)
+				}
+
+				orphans = append(orphans, protocol.OrphanItem{
+					Type:      "instance_dir",
+					Path:      filepath.Join(sysName, dirName),
+					AbsPath:   fullPath,
+					Size:      getDirSize(fullPath),
+					IsRunning: running,
+					Pid:       pid,
+				})
+			}
+		}
+	}
+
+	return orphans, nil
+}
+
+// DeleteOrphans 删除指定的目录
+func DeleteOrphans(relPaths []string) (int, error) {
+	count := 0
+	for _, relPath := range relPaths {
+		// 防御：禁止跳出 baseWorkDir
+		if strings.Contains(relPath, "..") {
+			continue
+		}
+
+		fullPath := filepath.Join(baseWorkDir, relPath)
+
+		// 防御：再次检查是否运行中
+		if isRunning(fullPath) {
+			log.Printf("[Cleaner] Skip deletion, process is running: %s", fullPath)
+			continue
+		}
+
+		log.Printf("[Cleaner] Removing orphan: %s", fullPath)
+		if err := os.RemoveAll(fullPath); err == nil {
+			count++
+		} else {
+			log.Printf("[Cleaner] Delete failed: %v", err)
+		}
+	}
+	return count, nil
+}
+
+// getDirSize 递归计算目录大小
+func getDirSize(path string) int64 {
+	var size int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
 }

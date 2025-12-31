@@ -349,3 +349,124 @@ func (h *ServerHandler) CleanAllNodesCache(w http.ResponseWriter, r *http.Reques
 		"total_freed":   totalFreedBytes,
 	})
 }
+
+// ScanAllOrphans 扫描全网孤儿资源
+// POST /api/maintenance/scan_orphans
+func (h *ServerHandler) ScanAllOrphans(w http.ResponseWriter, r *http.Request) {
+	// 1. 获取全量白名单 (直接查 DB，不依赖视图层级)
+	// 只要 DB 里有，就算合法，不管是 Stopped 还是 Running
+	validSystems, err := h.sysMgr.GetAllSystemIDs()
+	if err != nil {
+		response.Error(w, e.New(code.DatabaseError, "Get system IDs failed", err))
+		return
+	}
+
+	validInstances, err := h.instMgr.GetAllInstanceIDs()
+	if err != nil {
+		response.Error(w, e.New(code.DatabaseError, "Get instances failed", err))
+		return
+	}
+
+	// 2. 构造 Worker 请求体
+	reqPayload := protocol.OrphanScanRequest{
+		ValidSystems:   validSystems,
+		ValidInstances: validInstances,
+	}
+	reqBytes, _ := json.Marshal(reqPayload)
+
+	// 3. 并发请求在线 Worker
+	nodes := h.nodeMgr.GetAllNodes()
+	type NodeResult struct {
+		NodeIP string                `json:"node_ip"`
+		Items  []protocol.OrphanItem `json:"items"`
+		Error  string                `json:"error"`
+	}
+
+	var results []NodeResult
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, node := range nodes {
+		if node.Status != "online" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(n protocol.NodeInfo) {
+			defer wg.Done()
+
+			targetURL := fmt.Sprintf("http://%s:%d/api/maintenance/scan_orphans", n.IP, n.Port)
+			body, err := utils.Post(targetURL, reqBytes)
+
+			res := NodeResult{NodeIP: n.IP, Items: []protocol.OrphanItem{}}
+
+			if err != nil {
+				res.Error = err.Error()
+			} else {
+				var workerResp protocol.OrphanScanResponse
+				if json.Unmarshal(body, &workerResp) == nil {
+					res.Items = workerResp.Items
+				} else {
+					res.Error = "Parse error"
+				}
+			}
+
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}(node)
+	}
+	wg.Wait()
+
+	response.Success(w, results)
+}
+
+// DeleteOrphans 确认删除
+// POST /api/maintenance/delete_orphans
+// Body: { "targets": [ { "node_ip": "...", "paths": ["..."] } ] }
+func (h *ServerHandler) DeleteOrphans(w http.ResponseWriter, r *http.Request) {
+	type Target struct {
+		NodeIP string   `json:"node_ip"`
+		Paths  []string `json:"paths"`
+	}
+	var req struct {
+		Targets []Target `json:"targets"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "JSON error", err))
+		return
+	}
+
+	var successCount int64
+	var wg sync.WaitGroup
+
+	for _, t := range req.Targets {
+		if len(t.Paths) == 0 {
+			continue
+		}
+
+		node, exists := h.nodeMgr.GetNode(t.NodeIP)
+		if !exists {
+			continue
+		}
+
+		wg.Add(1)
+		go func(n *protocol.NodeInfo, paths []string) {
+			defer wg.Done()
+			url := fmt.Sprintf("http://%s:%d/api/maintenance/delete_orphans", n.IP, n.Port)
+			p := protocol.OrphanDeleteRequest{Items: paths}
+			b, _ := json.Marshal(p)
+
+			resp, err := utils.Post(url, b)
+			if err == nil {
+				var res map[string]int
+				json.Unmarshal(resp, &res)
+				atomic.AddInt64(&successCount, int64(res["deleted_count"]))
+			}
+		}(node, t.Paths)
+	}
+	wg.Wait()
+
+	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_orphans", "cluster", "gc", fmt.Sprintf("Deleted %d items", successCount), "success")
+	response.Success(w, map[string]int64{"success_count": successCount})
+}

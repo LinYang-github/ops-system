@@ -311,3 +311,29 @@ type RunnerModule struct {
 	StopEntrypoint string   `json:"stop_entrypoint"`
 	StopArgs       []string `json:"stop_args"`
 }
+
+// OrphanScanRequest 孤儿扫描请求 (Master -> Worker)
+type OrphanScanRequest struct {
+	ValidSystems   []string `json:"valid_systems"`   // 合法的系统名称列表
+	ValidInstances []string `json:"valid_instances"` // 合法的实例 ID 列表
+}
+
+// OrphanItem 扫描到的孤儿对象
+type OrphanItem struct {
+	Type      string `json:"type"`       // "system_dir" 或 "instance_dir"
+	Path      string `json:"path"`       // 相对路径 e.g. "PaymentSys/gateway_inst-123"
+	AbsPath   string `json:"abs_path"`   // 绝对路径
+	Size      int64  `json:"size"`       // 占用空间
+	IsRunning bool   `json:"is_running"` // 进程是否存活 (如果存活，建议不要删)
+	Pid       int    `json:"pid"`        // 存活时的 PID
+}
+
+// OrphanScanResponse 扫描响应
+type OrphanScanResponse struct {
+	Items []OrphanItem `json:"items"`
+}
+
+// OrphanDeleteRequest 删除请求
+type OrphanDeleteRequest struct {
+	Items []string `json:"items"` // 要删除的相对路径列表
+}

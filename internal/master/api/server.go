@@ -281,6 +281,8 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 
 	mux.HandleFunc("/api/login", h.HandleLogin)
 	mux.HandleFunc("/api/maintenance/cleanup_all_cache", h.CleanAllNodesCache)
+	mux.HandleFunc("/api/maintenance/scan_orphans", h.ScanAllOrphans)
+	mux.HandleFunc("/api/maintenance/delete_orphans", h.DeleteOrphans)
 	// --- WebSocket ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 

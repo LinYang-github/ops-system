@@ -173,3 +173,21 @@ func (im *InstanceManager) GetAllInstancesMetrics() map[string]protocol.Instance
 	}
 	return res
 }
+
+// GetAllInstanceIDs 获取所有登记在册的实例 ID (用于孤儿扫描白名单)
+func (im *InstanceManager) GetAllInstanceIDs() ([]string, error) {
+	rows, err := im.db.Query("SELECT id FROM instance_infos")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}

@@ -118,7 +118,13 @@
                   <el-button type="warning" plain icon="Brush" @click="openCleanDialog">立即清理</el-button>
                 </div>
 
-                <!-- 预留位置：后续可以在这里加 日志清理、孤儿进程清理 等功能 -->
+                <div class="action-row" style="margin-top: 15px;">
+                  <div class="label-group">
+                    <span class="main-label">孤儿资源回收 (Garbage Collection)</span>
+                    <span class="sub-label">扫描并清理 Worker 节点上不再受 Master 管理的残留目录。</span>
+                  </div>
+                  <el-button type="danger" plain icon="Search" @click="openGcDialog">扫描孤儿</el-button>
+                </div>
               </div>
             </el-tab-pane>
           </el-tabs>
@@ -145,14 +151,85 @@
         <el-button type="primary" @click="executeClean" :loading="cleanDialog.loading">开始执行</el-button>
       </template>
     </el-dialog>
+    <!-- GC 弹窗 -->
+<el-dialog v-model="gcDialog.visible" title="孤儿资源扫描结果" width="800px">
+  <div class="gc-container" v-loading="gcDialog.loading">
+    
+    <el-alert 
+      v-if="gcDialog.scanned && gcDialog.list.length > 0"
+      title="警告：请仔细核对！"
+      type="warning" 
+      show-icon
+      :closable="false"
+      description="以下目录在 Master 数据库中不存在。如果删除，数据将不可恢复。标红的项表示进程仍在运行（僵尸进程），建议手动排查。"
+      style="margin-bottom: 15px;"
+    />
+    
+    <el-alert 
+      v-if="gcDialog.scanned && gcDialog.list.length === 0"
+      title="系统很干净"
+      type="success" 
+      show-icon
+      :closable="false"
+      description="未发现任何孤儿资源。"
+    />
+
+    <el-table 
+      v-if="gcDialog.list.length > 0"
+      :data="gcDialog.list" 
+      style="width: 100%" 
+      height="400px" 
+      border 
+      @selection-change="handleSelectionChange"
+    >
+      <el-table-column type="selection" width="55" :selectable="isSelectable" />
+      
+      <el-table-column prop="node_ip" label="节点 IP" width="130" />
+      
+      <el-table-column label="资源类型" width="100">
+        <template #default="scope">
+          <el-tag :type="scope.row.type === 'system_dir' ? 'warning' : 'info'" size="small">
+            {{ scope.row.type === 'system_dir' ? '系统目录' : '实例目录' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      
+      <el-table-column prop="path" label="相对路径" show-overflow-tooltip />
+      
+      <el-table-column label="占用空间" width="100" align="right">
+        <template #default="scope">{{ formatSize(scope.row.size) }}</template>
+      </el-table-column>
+
+      <el-table-column label="状态" width="100" align="center">
+        <template #default="scope">
+          <el-tag v-if="scope.row.is_running" type="danger" effect="dark">Running</el-tag>
+          <el-tag v-else type="info" effect="plain">Idle</el-tag>
+        </template>
+      </el-table-column>
+    </el-table>
+
+  </div>
+  <template #footer>
+    <el-button @click="gcDialog.visible = false">关闭</el-button>
+    <el-button 
+      v-if="gcDialog.list.length > 0" 
+      type="danger" 
+      @click="executeDelete" 
+      :disabled="selectedOrphans.length === 0"
+      :loading="gcDialog.deleting"
+    >
+      删除选中 ({{ selectedOrphans.length }})
+    </el-button>
+  </template>
+</el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import request from '../utils/request'
-import { ElMessage, ElNotification } from 'element-plus'
-import { Check, Tools, InfoFilled } from '@element-plus/icons-vue'
+import { ElMessage, ElNotification, ElMessageBox } from 'element-plus'
+import { Check, Tools, InfoFilled, Brush, Search } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -270,6 +347,93 @@ const formatSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
+// 新增状态
+const gcDialog = reactive({
+  visible: false,
+  loading: false,
+  scanned: false,
+  deleting: false,
+  list: [] // Flattened list: { node_ip, ...OrphanItem }
+})
+const selectedOrphans = ref([])
+
+// 打开弹窗并自动扫描
+const openGcDialog = async () => {
+  gcDialog.visible = true
+  gcDialog.scanned = false
+  gcDialog.list = []
+  gcDialog.loading = true
+  
+  try {
+    const res = await request.post('/api/maintenance/scan_orphans')
+    // res 结构: [ { node_ip, items: [], error }, ... ]
+    
+    // 扁平化处理，方便 Table 展示
+    const flatList = []
+    res.forEach(node => {
+      if (node.items) {
+        node.items.forEach(item => {
+          flatList.push({
+            node_ip: node.node_ip,
+            ...item
+          })
+        })
+      }
+    })
+    gcDialog.list = flatList
+    gcDialog.scanned = true
+  } catch(e) {
+    ElMessage.error('扫描失败: ' + e.message)
+  } finally {
+    gcDialog.loading = false
+  }
+}
+
+// 禁止选中正在运行的实例 (强制保护)
+const isSelectable = (row) => {
+  return !row.is_running
+}
+
+const handleSelectionChange = (val) => {
+  selectedOrphans.value = val
+}
+
+const executeDelete = async () => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要永久删除这 ${selectedOrphans.value.length} 个目录吗？此操作不可撤销！`, 
+      '高风险操作', 
+      { type: 'error', confirmButtonText: '确定删除', cancelButtonText: '再想想' }
+    )
+    
+    gcDialog.deleting = true
+    
+    // 聚合请求：按 NodeIP 分组
+    const targets = []
+    const map = {}
+    selectedOrphans.value.forEach(item => {
+      if (!map[item.node_ip]) map[item.node_ip] = []
+      map[item.node_ip].push(item.path)
+    })
+    
+    for (const ip in map) {
+      targets.push({ node_ip: ip, paths: map[ip] })
+    }
+
+    const res = await request.post('/api/maintenance/delete_orphans', { targets })
+    ElMessage.success(`清理成功，共删除 ${res.success_count} 个项目`)
+    gcDialog.visible = false
+    
+  } catch(e) {
+    if (e !== 'cancel') {
+      console.error(e) // 在控制台打印堆栈
+      // 显示具体错误信息，而不是笼统的"清理失败"
+      ElMessage.error('清理失败: ' + (e.message || e))
+    }
+  } finally {
+    gcDialog.deleting = false
+  }
+}
 
 onMounted(loadAllConfig)
 </script>

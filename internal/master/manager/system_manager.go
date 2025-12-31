@@ -147,3 +147,22 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 	}
 	return result
 }
+
+// GetAllSystemIDs 获取所有合法的系统 ID (作为目录白名单)
+func (sm *SystemManager) GetAllSystemIDs() ([]string, error) {
+	// 改为查询 id 字段
+	rows, err := sm.db.Query("SELECT id FROM system_infos")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
