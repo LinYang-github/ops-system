@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"ops-system/pkg/code"
@@ -96,7 +97,7 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 )
 
-// handleInstanceLogStream 代理日志 WebSocket (反向隧道版)
+// handleInstanceLogStream 代理日志 WebSocket (反向隧道版 - 修复资源泄漏)
 func (h *ServerHandler) InstanceLogStream(w http.ResponseWriter, r *http.Request) {
 	instID := r.URL.Query().Get("instance_id")
 	logKey := r.URL.Query().Get("log_key")
@@ -134,49 +135,110 @@ func (h *ServerHandler) InstanceLogStream(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), 504)
 		return
 	}
-	defer workerConn.Close()
 
 	// 5. 升级前端连接
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		workerConn.Close() // 如果前端升级失败，必须关闭已建立的 Worker 连接
 		return
 	}
-	defer clientConn.Close()
 
-	// 6. 双向管道 (Bridge)
-	// 使用 errChan 捕获任意一方的断开
-	errChan := make(chan error, 2)
+	// =================================================================
+	// 修复核心：双向管道 + 截止时间控制 + 统一关闭
+	// =================================================================
 
-	// Worker (Log Source) -> Frontend
+	// 统一关闭控制器，确保只关闭一次
+	var once sync.Once
+	closeAll := func() {
+		once.Do(func() {
+			workerConn.Close()
+			clientConn.Close()
+		})
+	}
+
+	// 退出信号
+	done := make(chan struct{})
+	defer closeAll()
+
+	// --- 设置 Worker 连接的读超时与 Pong 处理 ---
+	workerConn.SetReadLimit(512 * 1024) // 限制单条日志大小
+	workerConn.SetReadDeadline(time.Now().Add(pongWait))
+	workerConn.SetPongHandler(func(string) error {
+		workerConn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	// --- 设置 Client 连接的读超时与 Pong 处理 ---
+	clientConn.SetReadLimit(512 * 1024)
+	clientConn.SetReadDeadline(time.Now().Add(pongWait))
+	clientConn.SetPongHandler(func(string) error {
+		clientConn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	// 协程 A: Worker (Log Source) -> Frontend
 	go func() {
+		defer close(done) // 任何一方退出，通知主流程
+		defer closeAll()
+
 		for {
+			// [读] 阻塞读取，依赖 SetReadDeadline 防止僵死
 			mt, msg, err := workerConn.ReadMessage()
 			if err != nil {
-				errChan <- err
+				// log.Printf("Worker read error: %v", err)
 				return
 			}
+
+			// [写] 设置写超时，防止前端卡死导致 Master 协程泄漏
+			clientConn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := clientConn.WriteMessage(mt, msg); err != nil {
-				errChan <- err
 				return
 			}
 		}
 	}()
 
-	// Frontend (Control) -> Worker (e.g. Ping/Close)
+	// 协程 B: Frontend (Control) -> Worker
 	go func() {
+		defer closeAll()
 		for {
 			mt, msg, err := clientConn.ReadMessage()
 			if err != nil {
-				errChan <- err
 				return
 			}
+			workerConn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := workerConn.WriteMessage(mt, msg); err != nil {
-				errChan <- err
 				return
 			}
 		}
 	}()
 
-	<-errChan
-	// 退出时 defer 会关闭两个连接
+	// 协程 C: 心跳保活 (Ping Loop)
+	// 主动向两端发送 Ping，触发对方回复 Pong，从而刷新 ReadDeadline
+	go func() {
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				// Ping Frontend
+				clientConn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := clientConn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					closeAll()
+					return
+				}
+				// Ping Worker
+				workerConn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := workerConn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					closeAll()
+					return
+				}
+			}
+		}
+	}()
+
+	// 主协程阻塞等待
+	<-done
 }
