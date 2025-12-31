@@ -12,12 +12,21 @@ import (
 )
 
 // StartHeartbeat 启动心跳
-func StartHeartbeat(masterBaseURL string, localPort int, interval time.Duration) {
+func StartHeartbeat(masterBaseURL string, localPort int, workDir string, interval time.Duration) {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
 
+	// 1. 获取持久化 ID
+	nodeID, err := GetOrCreateNodeID(workDir)
+	if err != nil {
+		log.Fatalf("Failed to generate NodeID: %v", err)
+	}
+	log.Printf("🔹 Worker Identity: %s", nodeID)
+
 	nodeInfo := GetNodeInfo()
+	nodeInfo.ID = nodeID // 注入 ID
+
 	log.Printf("Heartbeat started. Target: %s, Interval: %v", masterBaseURL, interval)
 
 	ticker := time.NewTicker(interval)
@@ -28,9 +37,12 @@ func StartHeartbeat(masterBaseURL string, localPort int, interval time.Duration)
 		select {
 		case <-ticker.C:
 			status := GetStatus()
+			currentNodeInfo := GetNodeInfo()
+			currentNodeInfo.ID = nodeID // 确保 ID 存在
+
 			reqData := protocol.RegisterRequest{
 				Port:   localPort,
-				Info:   nodeInfo,
+				Info:   currentNodeInfo, // 使用带 ID 的 info
 				Status: status,
 			}
 

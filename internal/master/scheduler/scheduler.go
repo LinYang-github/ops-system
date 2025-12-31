@@ -13,7 +13,7 @@ func NewScheduler() *Scheduler {
 }
 
 // SelectBestNode 从节点列表中选择负载最低的一个
-// 返回: 节点IP, 是否找到
+// 返回: 节点ID, 是否找到
 func (s *Scheduler) SelectBestNode(nodes []protocol.NodeInfo) (string, bool) {
 	var bestNode string
 	var maxScore float64 = -1.0
@@ -37,7 +37,7 @@ func (s *Scheduler) SelectBestNode(nodes []protocol.NodeInfo) (string, bool) {
 		// 3. 择优 (打擂台)
 		if score > maxScore {
 			maxScore = score
-			bestNode = node.IP
+			bestNode = node.ID
 		}
 		candidates++
 	}

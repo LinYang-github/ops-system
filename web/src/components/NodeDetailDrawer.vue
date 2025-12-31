@@ -83,8 +83,8 @@ const loadData = async () => {
     // 【关键修改 2】request.get 返回的直接是业务数据
     // 结构为: { status: "success", data: { resultType: "matrix", result: [...] } }
     const [cpuRes, memRes] = await Promise.all([
-      request.get('/api/monitor/query_range', { params: { query: 'node_cpu_usage', instance: node.value.ip, start, end: now } }),
-      request.get('/api/monitor/query_range', { params: { query: 'node_mem_usage', instance: node.value.ip, start, end: now } })
+      request.get('/api/monitor/query_range', { params: { query: 'node_cpu_usage', instance: node.value.id, start, end: now } }),
+      request.get('/api/monitor/query_range', { params: { query: 'node_mem_usage', instance: node.value.id, start, end: now } })
     ])
 
     // 【关键修改 3】直接传入 res，不需要再 .data

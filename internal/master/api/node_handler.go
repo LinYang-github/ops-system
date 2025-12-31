@@ -100,19 +100,19 @@ func (h *ServerHandler) AddNode(w http.ResponseWriter, r *http.Request) {
 // POST /api/nodes/delete
 func (h *ServerHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IP string `json:"ip"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 		return
 	}
 
-	if err := h.nodeMgr.DeleteNode(req.IP); err != nil {
+	if err := h.nodeMgr.DeleteNode(req.ID); err != nil {
 		response.Error(w, e.New(code.DatabaseError, "删除节点失败", err))
 		return
 	}
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.IP, "", "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.ID, "", "success")
 	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
 	response.Success(w, nil)
@@ -122,7 +122,7 @@ func (h *ServerHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 // POST /api/nodes/rename
 func (h *ServerHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IP   string `json:"ip"`
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -130,12 +130,12 @@ func (h *ServerHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.nodeMgr.RenameNode(req.IP, req.Name); err != nil {
+	if err := h.nodeMgr.RenameNode(req.ID, req.Name); err != nil {
 		response.Error(w, e.New(code.DatabaseError, "重命名失败", err))
 		return
 	}
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "rename_node", "node", req.IP, req.Name, "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "rename_node", "node", req.ID, req.Name, "success")
 	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
 	response.Success(w, nil)
@@ -145,19 +145,19 @@ func (h *ServerHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 // POST /api/nodes/reset_name
 func (h *ServerHandler) ResetNodeName(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IP string `json:"ip"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 		return
 	}
 
-	if err := h.nodeMgr.ResetNodeName(req.IP); err != nil {
+	if err := h.nodeMgr.ResetNodeName(req.ID); err != nil {
 		response.Error(w, e.New(code.DatabaseError, "重置名称失败", err))
 		return
 	}
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "reset_node_name", "node", req.IP, "", "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "reset_node_name", "node", req.ID, "", "success")
 	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
 	response.Success(w, nil)
@@ -167,7 +167,7 @@ func (h *ServerHandler) ResetNodeName(w http.ResponseWriter, r *http.Request) {
 // POST /api/ctrl/cmd
 func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 	type TriggerReq struct {
-		TargetIP string `json:"target_ip"`
+		TargetID string `json:"target_id"`
 		Command  string `json:"command"`
 	}
 
@@ -177,7 +177,7 @@ func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, exists := h.nodeMgr.GetNode(trigger.TargetIP)
+	node, exists := h.nodeMgr.GetNode(trigger.TargetID)
 	if !exists {
 		response.Error(w, e.New(code.NodeNotFound, "节点不存在或离线", nil))
 		return
@@ -194,7 +194,7 @@ func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 10 * time.Second} // 执行命令可能稍慢
 	resp, err := client.Post(targetURL, "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetIP, "Network Error", "fail")
+		h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetID, "Network Error", "fail")
 		response.Error(w, e.New(code.NodeExecFailed, fmt.Sprintf("连接Worker失败: %v", err), err))
 		return
 	}
@@ -212,7 +212,7 @@ func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 	if result["error"] != "" {
 		status = "fail"
 	}
-	h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetIP, trigger.Command, status)
+	h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetID, trigger.Command, status)
 
 	// 返回结果
 	response.Success(w, result)
@@ -222,7 +222,7 @@ func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 // POST /api/nodes/clean_cache
 func (h *ServerHandler) CleanNodeCache(w http.ResponseWriter, r *http.Request) {
 	type CleanReq struct {
-		NodeIP string `json:"node_ip"`
+		NodeID string `json:"node_id"`
 		Retain int    `json:"retain"`
 	}
 	var req CleanReq
@@ -231,7 +231,7 @@ func (h *ServerHandler) CleanNodeCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, exists := h.nodeMgr.GetNode(req.NodeIP)
+	node, exists := h.nodeMgr.GetNode(req.NodeID)
 	if !exists {
 		response.Error(w, e.New(code.NodeNotFound, "Node offline", nil))
 		return

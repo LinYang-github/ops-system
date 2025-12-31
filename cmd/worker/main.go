@@ -94,7 +94,7 @@ func main() {
 	go handler.StartWorkerServer(listenAddr)
 
 	// 启动心跳
-	agent.StartHeartbeat(cfg.Connect.MasterURL, cfg.Server.Port, cfg.Logic.HeartbeatInterval)
+	agent.StartHeartbeat(cfg.Connect.MasterURL, cfg.Server.Port, absWorkDir, cfg.Logic.HeartbeatInterval)
 }
 
 func maskSecret(s string) string {

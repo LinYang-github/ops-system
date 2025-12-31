@@ -45,9 +45,10 @@ func initTables(db *sql.DB) {
 		// 日志表
 		`CREATE TABLE IF NOT EXISTS sys_op_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, operator TEXT, action TEXT, target_type TEXT, target_name TEXT, detail TEXT, status TEXT, create_time INTEGER);`,
 
-		// 节点表 (包含 port 和 mac_addr)
+		// 节点表
 		`CREATE TABLE IF NOT EXISTS node_infos (
-			ip TEXT PRIMARY KEY,
+			id TEXT PRIMARY KEY, 
+			ip TEXT,
 			port INTEGER,
 			hostname TEXT,
 			name TEXT,

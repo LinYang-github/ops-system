@@ -17,8 +17,7 @@ type NodeManager struct {
 	tsdb             *monitor.MemoryTSDB
 	offlineThreshold time.Duration
 
-	// 【核心优化】全量节点内存缓存
-	// Key: IP (string), Value: protocol.NodeInfo
+	// Key: NodeID (string), Value: protocol.NodeInfo
 	nodeCache sync.Map
 }
 
@@ -46,7 +45,7 @@ func NewNodeManager(db *sql.DB, tsdb *monitor.MemoryTSDB, offlineThreshold time.
 func (nm *NodeManager) loadFromDB() {
 	query := `
 		SELECT 
-			ip, port, hostname, name, COALESCE(mac_addr, ''), os, COALESCE(arch, ''), 
+			id, ip, port, hostname, name, COALESCE(mac_addr, ''), os, COALESCE(arch, ''), 
 			COALESCE(cpu_cores, 0), COALESCE(mem_total, 0), COALESCE(disk_total, 0),
 			status, last_heartbeat
 		FROM node_infos
@@ -62,12 +61,12 @@ func (nm *NodeManager) loadFromDB() {
 	for rows.Next() {
 		var n protocol.NodeInfo
 		rows.Scan(
-			&n.IP, &n.Port, &n.Hostname, &n.Name, &n.MacAddr, &n.OS, &n.Arch,
+			&n.ID, &n.IP, &n.Port, &n.Hostname, &n.Name, &n.MacAddr, &n.OS, &n.Arch,
 			&n.CPUCores, &n.MemTotal, &n.DiskTotal,
 			&n.Status, &n.LastHeartbeat,
 		)
-		// 存入缓存
-		nm.nodeCache.Store(n.IP, n)
+		// 存入缓存，使用 ID 作为 Key
+		nm.nodeCache.Store(n.ID, n)
 		count++
 	}
 	log.Printf("[NodeManager] Loaded %d nodes into memory cache", count)
@@ -95,8 +94,9 @@ func (nm *NodeManager) persistDirtyNodes() {
 		node := value.(protocol.NodeInfo)
 		// 只更新在线节点，减少 IO
 		if node.Status == "online" {
-			// 只更新心跳和状态，静态信息一般不变
-			_, err := tx.Exec("UPDATE node_infos SET last_heartbeat = ?, status = ? WHERE ip = ?", node.LastHeartbeat, node.Status, node.IP)
+			// 只更新心跳和状态，静态信息一般不变，同时更新 IP (防止 Worker IP 变动)
+			_, err := tx.Exec("UPDATE node_infos SET last_heartbeat = ?, status = ?, ip = ?, port = ? WHERE id = ?",
+				node.LastHeartbeat, node.Status, node.IP, node.Port, node.ID)
 			if err != nil {
 				log.Printf("[Sync] Update failed: %v", err)
 			}
@@ -109,69 +109,110 @@ func (nm *NodeManager) persistDirtyNodes() {
 // HandleHeartbeat 处理心跳 (纯内存操作，极速)
 func (nm *NodeManager) HandleHeartbeat(req protocol.RegisterRequest, remoteIP string) {
 	now := time.Now().Unix()
+	nodeID := req.Info.ID
 
-	// 1. 写入时序库 (监控图表)
-	if nm.tsdb != nil {
-		nm.tsdb.Write(remoteIP, "node_cpu_usage", req.Status.CPUUsage)
-		nm.tsdb.Write(remoteIP, "node_mem_usage", req.Status.MemUsage)
-		nm.tsdb.Write(remoteIP, "node_net_in", req.Status.NetInSpeed)
-		nm.tsdb.Write(remoteIP, "node_net_out", req.Status.NetOutSpeed)
+	// 1. 容错校验：如果 Worker 没有上报 ID (旧版本或异常)，记录日志并拒绝处理
+	if nodeID == "" {
+		log.Printf("⚠️ [NodeManager] Worker %s missing NodeID, ignoring heartbeat.", remoteIP)
+		return
 	}
 
-	// 2. 检查缓存中是否存在
-	val, exists := nm.nodeCache.Load(remoteIP)
+	// 2. 写入时序库 (使用 NodeID 作为 Key，保证 IP 变更后监控数据不丢失)
+	if nm.tsdb != nil {
+		nm.tsdb.Write(nodeID, "node_cpu_usage", req.Status.CPUUsage)
+		nm.tsdb.Write(nodeID, "node_mem_usage", req.Status.MemUsage)
+		nm.tsdb.Write(nodeID, "node_disk_usage", req.Status.DiskUsage)
+		nm.tsdb.Write(nodeID, "node_net_in", req.Status.NetInSpeed)
+		nm.tsdb.Write(nodeID, "node_net_out", req.Status.NetOutSpeed)
+	}
+
+	// 3. 检查缓存中是否存在 (通过 ID 查)
+	val, exists := nm.nodeCache.Load(nodeID)
 
 	if exists {
-		// --- 场景 A: 老节点 (只更新内存) ---
+		// ==============================
+		// 场景 A: 老节点 (只更新内存状态)
+		// ==============================
 		node := val.(protocol.NodeInfo)
 
-		// 更新动态数据
+		// 3.1 更新核心状态
 		node.LastHeartbeat = now
 		node.Status = "online"
-		node.Port = req.Port // 端口可能会变
 
-		// 更新监控快照 (用于列表显示)
+		// 3.2 【关键】始终更新网络地址
+		// 即使是老节点，IP 和端口也可能发生变化 (DHCP, 容器重启等)
+		// Master 后续调用 Worker 接口时将使用这里最新的 IP
+		node.IP = remoteIP
+		node.Port = req.Port
+
+		// 3.3 更新实时监控快照 (用于列表展示)
 		node.CPUUsage = req.Status.CPUUsage
 		node.MemUsage = req.Status.MemUsage
 		node.NetInSpeed = req.Status.NetInSpeed
 		node.NetOutSpeed = req.Status.NetOutSpeed
 
-		// *可选*: 如果 Hostname 变了，可能需要触发一次 DB 更新，这里暂略
-
-		// 写回缓存
-		nm.nodeCache.Store(remoteIP, node)
-
-	} else {
-		// --- 场景 B: 新节点 (写入 DB + 内存) ---
-		log.Printf(">>> [NodeManager] New Node Detected: %s", remoteIP)
-
-		newNode := protocol.NodeInfo{
-			IP: remoteIP, Port: req.Port, Hostname: req.Info.Hostname, Name: req.Info.Hostname, // 默认名
-			MacAddr: req.Info.MacAddr, OS: req.Info.OS, Arch: req.Info.Arch,
-			CPUCores: req.Info.CPUCores, MemTotal: req.Info.MemTotal, DiskTotal: req.Info.DiskTotal,
-			Status: "online", LastHeartbeat: now,
-			// 监控数据
-			CPUUsage: req.Status.CPUUsage, MemUsage: req.Status.MemUsage,
+		// 3.4 可选：如果 Hostname 变了，更新一下 (防止改名后不生效)
+		if req.Info.Hostname != "" {
+			node.Hostname = req.Info.Hostname
 		}
 
-		// 1. 存 DB (同步写入，保证持久化)
+		// 3.5 写回缓存
+		nm.nodeCache.Store(nodeID, node)
+
+	} else {
+		// ==============================
+		// 场景 B: 新节点 (写入 DB + 内存)
+		// ==============================
+		log.Printf(">>> [NodeManager] New Node Registered: %s (IP: %s)", nodeID, remoteIP)
+
+		// 构造新节点对象
+		// 注意：Name 默认为 Hostname，后续用户可在前端修改 Name
+		name := req.Info.Name
+		if name == "" {
+			name = req.Info.Hostname
+		}
+
+		newNode := protocol.NodeInfo{
+			ID:            nodeID,
+			IP:            remoteIP,
+			Port:          req.Port,
+			Hostname:      req.Info.Hostname,
+			Name:          name,
+			MacAddr:       req.Info.MacAddr,
+			OS:            req.Info.OS,
+			Arch:          req.Info.Arch,
+			CPUCores:      req.Info.CPUCores,
+			MemTotal:      req.Info.MemTotal,
+			DiskTotal:     req.Info.DiskTotal,
+			Status:        "online",
+			LastHeartbeat: now,
+			// 初始监控值
+			CPUUsage:    req.Status.CPUUsage,
+			MemUsage:    req.Status.MemUsage,
+			NetInSpeed:  req.Status.NetInSpeed,
+			NetOutSpeed: req.Status.NetOutSpeed,
+		}
+
+		// 4.1 存 DB (同步写入，保证持久化)
+		// 使用 INSERT OR REPLACE 确保 ID 冲突时覆盖旧数据
 		insertSQL := `INSERT OR REPLACE INTO node_infos (
-			ip, port, hostname, name, mac_addr, os, arch, 
+			id, ip, port, hostname, name, mac_addr, os, arch, 
 			cpu_cores, mem_total, disk_total, status, last_heartbeat
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 		_, err := nm.db.Exec(insertSQL,
-			newNode.IP, newNode.Port, newNode.Hostname, newNode.Name, newNode.MacAddr, newNode.OS, newNode.Arch,
+			newNode.ID, newNode.IP, newNode.Port, newNode.Hostname, newNode.Name, newNode.MacAddr, newNode.OS, newNode.Arch,
 			newNode.CPUCores, newNode.MemTotal, newNode.DiskTotal, "online", now,
 		)
 
 		if err != nil {
 			log.Printf("!!! [NodeManager] DB Insert Failed: %v", err)
-			return // DB 失败暂不更新缓存，等待下一次重试
+			// DB 失败不更新缓存，等待下一次心跳重试
+			return
 		}
 
-		// 2. 存缓存
-		nm.nodeCache.Store(remoteIP, newNode)
+		// 4.2 存缓存
+		nm.nodeCache.Store(nodeID, newNode)
 	}
 }
 
@@ -199,8 +240,8 @@ func (nm *NodeManager) GetAllNodes() []protocol.NodeInfo {
 }
 
 // GetNode 获取单个节点 (优先读缓存)
-func (nm *NodeManager) GetNode(ip string) (*protocol.NodeInfo, bool) {
-	if val, ok := nm.nodeCache.Load(ip); ok {
+func (nm *NodeManager) GetNode(id string) (*protocol.NodeInfo, bool) {
+	if val, ok := nm.nodeCache.Load(id); ok {
 		n := val.(protocol.NodeInfo)
 		return &n, true
 	}
@@ -222,54 +263,54 @@ func (nm *NodeManager) GetAllNodesMetrics() map[string]protocol.NodeInfo {
 
 // --- 以下 CRUD 操作需要同时更新 DB 和 缓存 ---
 
-func (nm *NodeManager) AddPlannedNode(ip, name string) error {
+func (nm *NodeManager) AddPlannedNode(id, name string) error {
 	// 1. 写 DB
-	_, err := nm.db.Exec(`INSERT INTO node_infos (ip, port, name, status, hostname, last_heartbeat) VALUES (?, 0, ?, 'planned', '待接入', 0)`, ip, name)
+	_, err := nm.db.Exec(`INSERT INTO node_infos (id, port, name, status, hostname, last_heartbeat) VALUES (?, 0, ?, 'planned', '待接入', 0)`, id, name)
 	if err != nil {
 		return err
 	}
 
 	// 2. 写缓存
-	nm.nodeCache.Store(ip, protocol.NodeInfo{
-		IP: ip, Name: name, Status: "planned", Hostname: "待接入",
+	nm.nodeCache.Store(id, protocol.NodeInfo{
+		ID: id, Name: name, Status: "planned", Hostname: "待接入",
 	})
 	return nil
 }
 
-func (nm *NodeManager) DeleteNode(ip string) error {
-	_, err := nm.db.Exec("DELETE FROM node_infos WHERE ip = ?", ip)
+func (nm *NodeManager) DeleteNode(id string) error {
+	_, err := nm.db.Exec("DELETE FROM node_infos WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
-	nm.nodeCache.Delete(ip)
+	nm.nodeCache.Delete(id)
 	return nil
 }
 
-func (nm *NodeManager) RenameNode(ip, newName string) error {
-	_, err := nm.db.Exec("UPDATE node_infos SET name = ? WHERE ip = ?", newName, ip)
+func (nm *NodeManager) RenameNode(id, newName string) error {
+	_, err := nm.db.Exec("UPDATE node_infos SET name = ? WHERE id = ?", newName, id)
 	if err != nil {
 		return err
 	}
 
 	// 更新缓存
-	if val, ok := nm.nodeCache.Load(ip); ok {
+	if val, ok := nm.nodeCache.Load(id); ok {
 		n := val.(protocol.NodeInfo)
 		n.Name = newName
-		nm.nodeCache.Store(ip, n)
+		nm.nodeCache.Store(id, n)
 	}
 	return nil
 }
 
-func (nm *NodeManager) ResetNodeName(ip string) error {
-	_, err := nm.db.Exec("UPDATE node_infos SET name = hostname WHERE ip = ?", ip)
+func (nm *NodeManager) ResetNodeName(id string) error {
+	_, err := nm.db.Exec("UPDATE node_infos SET name = hostname WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
 
-	if val, ok := nm.nodeCache.Load(ip); ok {
+	if val, ok := nm.nodeCache.Load(id); ok {
 		n := val.(protocol.NodeInfo)
 		n.Name = n.Hostname
-		nm.nodeCache.Store(ip, n)
+		nm.nodeCache.Store(id, n)
 	}
 	return nil
 }

@@ -15,12 +15,12 @@ import (
 // GET /api/monitor/query_range?query=node_cpu_usage&instance=1.2.3.4&start=...&end=...
 func (h *ServerHandler) QueryRange(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	metric := q.Get("query")   // e.g. node_cpu_usage
-	ip := q.Get("instance")    // e.g. 192.168.1.10
+	metric := q.Get("query") // e.g. node_cpu_usage
+	id := q.Get("instance")
 	startStr := q.Get("start") // Unix Timestamp
 	endStr := q.Get("end")
 
-	if metric == "" || ip == "" {
+	if metric == "" || id == "" {
 		response.Error(w, e.New(code.ParamError, "缺少 query 或 instance 参数", nil))
 		return
 	}
@@ -38,11 +38,11 @@ func (h *ServerHandler) QueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. 查询数据 (使用注入的 monitorStore)
-	points := h.monitorStore.QueryRange(metric, ip, start, end)
+	points := h.monitorStore.QueryRange(metric, id, start, end)
 
 	// 2. 格式化为 Prometheus 结构
 	// 返回结构: { status: "success", data: { resultType: "matrix", result: [...] } }
-	promResp := monitor.FormatPrometheusResponse(metric, ip, points)
+	promResp := monitor.FormatPrometheusResponse(metric, id, points)
 
 	// 3. 统一响应
 	// 最终前端收到的 JSON: { code: 0, msg: "success", data: { status: "success", data: ... } }

@@ -20,10 +20,12 @@ import (
 
 // sendInstanceCommand 向 Worker 发送实例控制指令
 func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action string) error {
-	// 1. 获取节点信息 (使用注入的 nodeMgr)
+	// 1. 获取节点信息
+	// 注意：在 NodeID 改造后，inst.NodeIP 字段实际上存储的是 NodeID
+	// 我们需要用这个 ID 去内存缓存中查出当前真实的物理 IP
 	node, exists := h.nodeMgr.GetNode(inst.NodeIP)
 	if !exists {
-		return fmt.Errorf("node %s offline", inst.NodeIP)
+		return fmt.Errorf("node %s offline or not found", inst.NodeIP)
 	}
 
 	// 2. 构造请求
@@ -33,7 +35,7 @@ func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action 
 	}
 	reqBytes, _ := json.Marshal(workerReq)
 
-	// 3. 发送 HTTP 请求
+	// 3. 发送 HTTP 请求 (使用查出来的真实 IP)
 	targetURL := fmt.Sprintf("http://%s:%d/api/instance/action", node.IP, node.Port)
 	return utils.PostJSON(targetURL, reqBytes)
 }
@@ -45,9 +47,11 @@ func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action 
 // DeployInstance 部署实例
 // POST /api/deploy
 func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
+	// 定义请求结构 (兼容 auto 模式)
 	type DeployReq struct {
 		SystemID       string `json:"system_id"`
-		NodeIP         string `json:"node_ip"`
+		NodeID         string `json:"node_id"` // 指定的节点 ID
+		NodeIP         string `json:"node_ip"` // 仅用于判断 "auto"
 		ServiceName    string `json:"service_name"`
 		ServiceVersion string `json:"service_version"`
 	}
@@ -57,31 +61,35 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var targetNodeIP string
+	var targetNodeID string
 
 	// ==========================================
 	// 1. 调度逻辑 (自动选择节点)
 	// ==========================================
 	if req.NodeIP == "auto" {
-		// 获取所有节点数据的快照 (包含实时 CPU/Mem)
+		// 获取所有节点数据的快照
 		allNodes := h.nodeMgr.GetAllNodes()
 
-		// 调度算法选择
-		selectedIP, found := h.scheduler.SelectBestNode(allNodes)
+		// 调度算法选择，返回最佳节点的 ID
+		selectedID, found := h.scheduler.SelectBestNode(allNodes)
 		if !found {
 			response.Error(w, e.New(code.NodeOffline, "自动调度失败: 无可用在线节点", nil))
 			return
 		}
-		targetNodeIP = selectedIP
+		targetNodeID = selectedID
 	} else {
-		targetNodeIP = req.NodeIP
+		if req.NodeID == "" {
+			response.Error(w, e.New(code.ParamError, "必须指定 node_id 或 node_ip=auto", nil))
+			return
+		}
+		targetNodeID = req.NodeID
 	}
 
 	// ==========================================
-	// 2. 检查节点状态
+	// 2. 检查节点状态 & 获取真实 IP
 	// ==========================================
-	node, exists := h.nodeMgr.GetNode(targetNodeIP)
-	if !exists {
+	node, exists := h.nodeMgr.GetNode(targetNodeID)
+	if !exists || node.Status != "online" {
 		response.Error(w, e.New(code.NodeOffline, "目标节点不在线", nil))
 		return
 	}
@@ -132,10 +140,11 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	instanceID := fmt.Sprintf("inst-%d", time.Now().UnixNano())
 
 	// 预先入库 (状态为 deploying)
+	// 【注意】这里 NodeIP 字段存的是 NodeID，为了避免修改 DB Schema，暂复用该字段
 	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID:             instanceID,
 		SystemID:       req.SystemID,
-		NodeIP:         targetNodeIP,
+		NodeIP:         targetNodeID, // Store ID
 		ServiceName:    req.ServiceName,
 		ServiceVersion: req.ServiceVersion,
 		Status:         "deploying",
@@ -161,7 +170,9 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqBody, _ := json.Marshal(workerReq)
-	targetURL := fmt.Sprintf("http://%s:%d/api/deploy", targetNodeIP, node.Port)
+
+	// 使用查出来的真实 IP 拼接 URL
+	targetURL := fmt.Sprintf("http://%s:%d/api/deploy", node.IP, node.Port)
 
 	// 发送请求 (Worker 异步处理)
 	if err := utils.PostJSON(targetURL, reqBody); err != nil {
@@ -176,7 +187,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 记录成功日志
-	logDetail := fmt.Sprintf("Node: %s, Ver: %s, ID: %s", targetNodeIP, req.ServiceVersion, instanceID)
+	logDetail := fmt.Sprintf("Node: %s (%s), Ver: %s, ID: %s", node.Name, node.IP, req.ServiceVersion, instanceID)
 	h.logMgr.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, logDetail, "success")
 
 	response.Success(w, nil)
@@ -187,7 +198,8 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request) {
 	type RegExtReq struct {
 		SystemID string                  `json:"system_id"`
-		NodeIP   string                  `json:"node_ip"`
+		NodeID   string                  `json:"node_id"` // 使用 NodeID
+		NodeIP   string                  `json:"node_ip"` // 兼容字段
 		Config   protocol.ExternalConfig `json:"config"`
 	}
 	var req RegExtReq
@@ -196,8 +208,16 @@ func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	node, exists := h.nodeMgr.GetNode(req.NodeIP)
-	if !exists {
+	// 优先使用 NodeID，如果没有则尝试 NodeIP (兼容旧前端)
+	targetID := req.NodeID
+	if targetID == "" {
+		// 如果前端只传了 IP，尝试反向查找 (不推荐，但为了健壮性)
+		// 这里暂且认为 req.NodeIP 就是 ID，或者调用者保证传对了
+		targetID = req.NodeIP
+	}
+
+	node, exists := h.nodeMgr.GetNode(targetID)
+	if !exists || node.Status != "online" {
 		response.Error(w, e.New(code.NodeOffline, "目标节点不在线", nil))
 		return
 	}
@@ -208,7 +228,7 @@ func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request)
 	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID:             instanceID,
 		SystemID:       req.SystemID,
-		NodeIP:         req.NodeIP,
+		NodeIP:         targetID, // Store ID
 		ServiceName:    req.Config.Name,
 		ServiceVersion: "external",
 		Status:         "stopped",
@@ -222,6 +242,7 @@ func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request)
 		Config:     req.Config,
 	}
 	reqBytes, _ := json.Marshal(workerReq)
+
 	targetURL := fmt.Sprintf("http://%s:%d/api/external/register", node.IP, node.Port)
 
 	if err := utils.PostJSON(targetURL, reqBytes); err != nil {
@@ -330,6 +351,7 @@ func (h *ServerHandler) SystemAction(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(target *protocol.InstanceInfo) {
 			defer wg.Done()
+			// sendInstanceCommand 内部会通过 ID 查找最新 IP
 			if err := h.sendInstanceCommand(target, req.Action); err != nil {
 				// 仅记录日志，不中断其他
 				mu.Lock()

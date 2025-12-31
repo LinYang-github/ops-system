@@ -17,7 +17,7 @@
             active-text-color="var(--el-color-primary)"
             :unique-opened="true"
           >
-          <!-- 0. 系统概览 -->
+            <!-- 0. 系统概览 -->
             <el-menu-item index="dashboard" @click="handleMenuSelect('dashboard')">
               <el-icon><Odometer /></el-icon>
               <span>系统概览</span>
@@ -28,7 +28,7 @@
               <span>节点管理</span>
             </el-menu-item>
             
-            <!-- 2. 业务系统 (改为子菜单) -->
+            <!-- 2. 业务系统 -->
             <el-sub-menu index="systems">
               <template #title>
                 <el-icon><Operation /></el-icon>
@@ -71,7 +71,7 @@
     
             <!-- 系统维护组 -->
             <el-menu-item index="backups" @click="handleMenuSelect('backups')">
-              <el-icon><Coin /></el-icon> <!-- 或者 use <Files /> -->
+              <el-icon><Coin /></el-icon>
               <span>数据备份</span>
             </el-menu-item>
             <el-menu-item index="alerts" @click="handleMenuSelect('alerts')">
@@ -91,7 +91,7 @@
               <span class="breadcrumb">{{ headerTitle }}</span>
             </div>
             <div class="header-right">
-              <!-- [新增] 告警铃铛 -->
+              <!-- 告警铃铛 -->
               <div class="header-action-item" @click="handleMenuSelect('alerts')" title="查看告警">
                 <el-badge :value="wsStore.activeAlertCount" :max="99" :hidden="wsStore.activeAlertCount === 0" class="alert-badge">
                   <el-icon :size="20"><Bell /></el-icon>
@@ -114,10 +114,15 @@
           <el-main class="layout-main">
             <Transition name="fade-transform" mode="out-in">
               <KeepAlive include="NodeManager,PackageManager">
-                <!-- 关键：这里传入 systemId prop，并监听 refresh 事件 -->
+                <!-- 
+                  【关键修复】
+                  1. :key="activeMenu" -> 强制组件在切换菜单时重新渲染，触发 onMounted
+                  2. :target-system-id -> 使用 kebab-case 传递 prop，符合 Vue 规范 
+                -->
                 <component 
                   :is="currentComponent" 
-                  :targetSystemId="selectedSystemId"
+                  :target-system-id="selectedSystemId"
+                  :key="activeMenu"
                   @refresh-systems="fetchSystems" 
                 />
               </KeepAlive>
@@ -146,8 +151,8 @@ import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
 import request from './utils/request'
 import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
-import { Moon, Sunny, Monitor, Box, Operation, Platform, Plus, Document, Coin, Odometer  } from '@element-plus/icons-vue'
-import { wsStore, connectWebSocket } from './store/wsStore' // 引入 Store
+import { Moon, Sunny, Monitor, Box, Operation, Platform, Plus, Document, Coin, Odometer, Setting, Bell, Tools } from '@element-plus/icons-vue'
+import { wsStore, connectWebSocket } from './store/wsStore'
 
 // 引入组件
 import NodeManager from './components/NodeManager.vue'
@@ -164,8 +169,8 @@ import Dashboard from './components/Dashboard.vue'
 const isDark = ref(false)
 const activeMenu = ref('dashboard')
 const selectedSystemId = ref('') // 传递给子组件的 ID
-// 修改获取数据的方式：直接从 wsStore 读取
-// 注意：App.vue 本身用到的 systemList 用于渲染左侧菜单
+
+// 左侧菜单数据
 const systemList = computed(() => wsStore.systems)
 
 // 创建系统相关
@@ -206,8 +211,7 @@ const headerTitle = computed(() => {
 const fetchSystems = async () => {
   try {
     const res = await request.get('/api/systems')
-    // 手动更新 store，避免等到下一次推送
-    wsStore.systems = res.data || []
+    wsStore.systems = res || []
     
     // 如果当前选中的系统被删了，回退到节点管理
     if (activeMenu.value.startsWith('sys-')) {
@@ -241,13 +245,15 @@ const createSystem = async () => {
     newSys.name = ''
     newSys.description = ''
     
-    // 刷新列表并自动跳转到新系统
+    // 刷新列表
     await fetchSystems()
-    if(res.id) {
+    
+    // 自动跳转到新系统
+    if(res && res.id) {
       handleSystemSelect(res.id)
     }
   } catch(e) {
-    ElMessage.error('创建失败')
+    ElMessage.error('创建失败: ' + (e.message || e))
   }
 }
 
@@ -258,7 +264,7 @@ const toggleDark = (val) => {
 }
 
 onMounted(() => {
-  connectWebSocket() // 启动 WS
+  connectWebSocket()
   fetchSystems()
   if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
     isDark.value = true

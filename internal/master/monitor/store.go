@@ -86,7 +86,7 @@ func (tsdb *MemoryTSDB) QueryRange(metric, ip string, start, end int64) []Point 
 
 // FormatPrometheusResponse 将内部 Point 转换为 Prometheus JSON 结构
 // Prometheus Value 是 [timestamp, "string_value"]
-func FormatPrometheusResponse(metric, ip string, points []Point) map[string]interface{} {
+func FormatPrometheusResponse(metric, id string, points []Point) map[string]interface{} {
 	values := make([][]interface{}, len(points))
 	for i, p := range points {
 		// Prometheus API 返回的时间戳是秒(浮点)或毫秒，这里用秒
@@ -102,7 +102,7 @@ func FormatPrometheusResponse(metric, ip string, points []Point) map[string]inte
 				map[string]interface{}{
 					"metric": map[string]string{
 						"__name__": metric,
-						"instance": ip,
+						"instance": id,
 					},
 					"values": values,
 				},
