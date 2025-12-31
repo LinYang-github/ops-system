@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -152,6 +153,14 @@ func (bm *BackupManager) RestoreBackup(filename string) error {
 	// 4. 恢复完成，为了重置所有 Manager 的 DB 连接状态，最稳妥的方式是退出进程
 	// 让 Supervisor 或用户手动重启
 	log.Println(">>> Restore successful. Exiting to reload data...")
+
+	if err := restartSelf(); err != nil {
+		log.Printf("❌ Automatic restart failed: %v. Please restart manually.", err)
+		// 如果重启失败，仍然需要退出，因为数据库连接已关闭，状态已不可用
+		os.Exit(1)
+	}
+
+	// 成功启动新进程后，退出旧进程
 	os.Exit(0)
 
 	return nil
@@ -236,4 +245,30 @@ func unzipRestore(srcZip, destDir string) error {
 		}
 	}
 	return nil
+}
+
+// [新增] 自重启辅助函数
+func restartSelf() error {
+	// 获取当前执行文件的绝对路径
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	// 获取启动时的参数 (保留端口、配置文件路径等参数)
+	args := os.Args[1:]
+
+	// 构建命令
+	cmd := exec.Command(executable, args...)
+
+	// 继承当前进程的环境变量
+	cmd.Env = os.Environ()
+
+	// 继承标准输入输出，保证日志能打印到控制台
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// 启动新进程 (不等待它结束，因为我们要退出当前进程)
+	return cmd.Start()
 }

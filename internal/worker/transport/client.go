@@ -79,18 +79,19 @@ func (c *WorkerClient) connectLoop() {
 			continue
 		}
 
+		// [关键修复] 为当前连接创建一个生命周期控制通道
+		stopChan := make(chan struct{})
+
 		c.Conn = conn
 		log.Printf("✅ WebSocket Connected!")
 
 		// [修改] 连接成功后，发送注册包 (TypeRegister)
 		c.sendPacket(protocol.TypeRegister)
 
-		// 启动子协程
-		// 注意：如果不使用 Context 控制退出，断线重连时旧的协程可能会泄露
-		// 但在这个简单模型中，writePump 会因为 Write 错误退出，heartbeatLoop 依赖外部断开
-		// 为了健壮性，我们可以引入 stopChan，但在 MVP 中先保持简单
-		go c.heartbeatLoop()
-		go c.writePump()
+		// [关键修复] 启动子协程时传入 stopChan 和 conn 副本
+		// 这样即使 c.Conn 变了，旧协程操作的还是旧 conn (虽然会报错退出)，或者通过 stopChan 退出
+		go c.heartbeatLoop(stopChan)
+		go c.writePump(conn, stopChan)
 
 		// 3. 阻塞读取 (主循环)
 		c.readLoop()
@@ -139,22 +140,29 @@ func (c *WorkerClient) readLoop() {
 }
 
 // [修改] 支持动态调整的心跳循环
-func (c *WorkerClient) heartbeatLoop() {
-	// 默认 5s
+func (c *WorkerClient) heartbeatLoop(stopChan chan struct{}) {
 	interval := 5 * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
+		// [关键修复] 优先响应停止信号
+		case <-stopChan:
+			return
+
 		case <-ticker.C:
-			if c.Conn == nil {
+			// 如果 stopChan 已关闭，不要发送
+			select {
+			case <-stopChan:
 				return
+			default:
+				if c.Conn != nil {
+					c.sendPacket(protocol.TypeHeartbeat)
+				}
 			}
-			c.sendPacket(protocol.TypeHeartbeat)
 
 		case newInterval := <-c.updateTickerChan:
-			// 如果配置变了，重置 Ticker
 			if newInterval != interval && newInterval > 0 {
 				log.Printf("🔄 Updating heartbeat interval: %v -> %v", interval, newInterval)
 				interval = newInterval
@@ -164,17 +172,43 @@ func (c *WorkerClient) heartbeatLoop() {
 	}
 }
 
-func (c *WorkerClient) writePump() {
-	for msg := range c.SendChan {
-		if c.Conn == nil {
-			break
-		}
+func (c *WorkerClient) writePump(conn *websocket.Conn, stopChan chan struct{}) {
+	// 启动一个 Ping Ticker 保持连接活跃
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
 
-		c.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if err := c.Conn.WriteJSON(msg); err != nil {
-			log.Printf("WS Write Error: %v", err)
-			c.Conn.Close()
+	for {
+		select {
+		// [关键修复] 收到停止信号立即退出
+		case <-stopChan:
 			return
+
+		case msg := <-c.SendChan:
+			// 发送前再次检查是否已停止
+			select {
+			case <-stopChan:
+				return
+			default:
+			}
+
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.WriteJSON(msg); err != nil {
+				log.Printf("WS Write Error: %v", err)
+				conn.Close() // 这里的 Close 是安全的
+				return
+			}
+
+		case <-ticker.C:
+			// 心跳 Ping
+			select {
+			case <-stopChan:
+				return
+			default:
+			}
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }
