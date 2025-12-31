@@ -257,6 +257,7 @@ type BackupFile struct {
 type LogFilesResp struct {
 	InstanceID string   `json:"instance_id"`
 	Files      []string `json:"files"` // e.g. ["Console Log", "Access Log"]
+	Error      string   `json:"error,omitempty"`
 }
 
 // AlertRule 告警规则配置
@@ -337,4 +338,14 @@ type OrphanScanResponse struct {
 // OrphanDeleteRequest 删除请求
 type OrphanDeleteRequest struct {
 	Items []string `json:"items"` // 要删除的相对路径列表
+}
+
+// [新增] 隧道启动请求 (Master -> Worker)
+type TunnelStartRequest struct {
+	SessionID  string `json:"session_id"`            // 会话ID
+	Type       string `json:"type"`                  // "log" or "terminal"
+	InstanceID string `json:"instance_id,omitempty"` // 用于日志
+	LogKey     string `json:"log_key,omitempty"`     // 用于日志
+	Rows       int    `json:"rows,omitempty"`        // 用于终端
+	Cols       int    `json:"cols,omitempty"`        // 用于终端
 }

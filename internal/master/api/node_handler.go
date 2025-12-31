@@ -15,7 +15,6 @@ import (
 	"ops-system/pkg/utils"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 )
 
 // HandleHeartbeat 处理 Worker 心跳 (HTTP 兼容接口)
@@ -215,67 +214,62 @@ func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, result)
 }
 
-// HandleNodeTerminal 代理节点终端
-// 注意：此功能目前仍依赖 Master -> Worker 的主动连接 (ws://nodeIP:port)
-// 在 NAT 环境下可能无法工作，需进一步改造为反向隧道
 // HandleNodeTerminal 代理节点终端 (反向隧道版)
 func (h *ServerHandler) HandleNodeTerminal(w http.ResponseWriter, r *http.Request) {
-	nodeIP := r.URL.Query().Get("ip")
+	nodeIP := r.URL.Query().Get("ip") // 前端传的是 IP，我们需要查 ID
 
-	// 1. 检查连接
-	if !h.gateway.IsConnected(nodeIP) {
+	// 通过 IP 反查 NodeID (因为 Gateway 只能通过 ID 寻址)
+	// 这里假设 nodeMgr 提供了一个通过 IP 查 ID 的方法，或者前端直接传 ID
+	// 简便起见，遍历查找 (生产环境建议优化)
+	var nodeID string
+	nodes := h.nodeMgr.GetAllNodes()
+	for _, n := range nodes {
+		if n.IP == nodeIP {
+			nodeID = n.ID
+			break
+		}
+	}
+	if nodeID == "" {
+		http.Error(w, "Node not found", 404)
+		return
+	}
+
+	if !h.gateway.IsConnected(nodeID) {
 		http.Error(w, "Node offline", 404)
 		return
 	}
 
-	// 2. 生成会话 ID
 	sessionID := uuid.NewString()
 
-	// 3. 准备等待通道
-	workerConnCh := h.gateway.AwaitWorkerConnection(sessionID)
-
-	// 4. 发送指令给 Worker：请连回来！
-	// 获取 Master 自身地址 (用于 Worker 回连)
-	// 注意：生产环境应配置外部可访问地址，这里简单取 Host
-	masterAddr := r.Host
-	cmdPayload := map[string]string{
-		"action":     "start_terminal",
-		"session_id": sessionID,
-		"server":     masterAddr,
-	}
-
-	if err := h.gateway.SendCommand(nodeIP, cmdPayload); err != nil {
-		http.Error(w, "Failed to send command: "+err.Error(), 500)
+	// 请求 Worker 建立终端隧道
+	err := h.gateway.RequestTunnel(nodeID, protocol.TunnelStartRequest{
+		SessionID: sessionID,
+		Type:      "terminal",
+	})
+	if err != nil {
+		http.Error(w, "Failed to request terminal: "+err.Error(), 500)
 		return
 	}
 
-	// 5. 升级前端 WebSocket
+	// 等待连接
+	workerConn, err := h.gateway.AwaitTunnelConnection(sessionID, 10*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), 504)
+		return
+	}
+	defer workerConn.Close()
+
+	// 升级前端
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer clientConn.Close()
 
-	// 6. 阻塞等待 Worker 连接 (最多等 10 秒，由 Gateway 控制)
-	var workerConn *websocket.Conn
-	select {
-	case conn := <-workerConnCh:
-		if conn == nil {
-			clientConn.WriteMessage(websocket.TextMessage, []byte("\r\nTimeout waiting for worker connection.\r\n"))
-			return
-		}
-		workerConn = conn
-	case <-time.After(10 * time.Second):
-		clientConn.WriteMessage(websocket.TextMessage, []byte("\r\nWorker connect timeout.\r\n"))
-		return
-	}
-	defer workerConn.Close()
-
-	// 7. 双向转发 (Pipe)
-	h.logMgr.RecordLog(utils.GetClientIP(r), "web_terminal", "node", nodeIP, "Session Start", "success")
-
+	// 双向管道
 	errChan := make(chan error, 2)
 	go func() {
+		// Worker -> Frontend
 		for {
 			mt, msg, err := workerConn.ReadMessage()
 			if err != nil {
@@ -286,6 +280,7 @@ func (h *ServerHandler) HandleNodeTerminal(w http.ResponseWriter, r *http.Reques
 		}
 	}()
 	go func() {
+		// Frontend -> Worker
 		for {
 			mt, msg, err := clientConn.ReadMessage()
 			if err != nil {
@@ -297,5 +292,4 @@ func (h *ServerHandler) HandleNodeTerminal(w http.ResponseWriter, r *http.Reques
 	}()
 
 	<-errChan
-	h.logMgr.RecordLog(utils.GetClientIP(r), "web_terminal", "node", nodeIP, "Session End", "success")
 }

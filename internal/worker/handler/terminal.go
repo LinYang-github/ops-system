@@ -20,30 +20,35 @@ type TerminalMessage struct {
 }
 
 // HandleTerminal 处理终端 WebSocket
+// [新增] HTTP 包装函数 (供 server.go 调用)
 func HandleTerminal(w http.ResponseWriter, r *http.Request) {
-	// 1. 升级 WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("Terminal upgrade failed: %v", err)
 		return
 	}
-	defer conn.Close()
+	// 转交给业务逻辑
+	ServeTerminal(conn)
+}
 
-	// 2. 准备 Shell 命令
+// ServeTerminal 直接处理 WebSocket 连接 (供 Tunnel 调用)
+func ServeTerminal(conn *websocket.Conn) {
+	defer conn.Close() // 确保退出时关闭
+
+	// 1. 准备 Shell
 	var shell string
 	var args []string
 	if runtime.GOOS == "windows" {
 		shell = "cmd.exe"
 	} else {
 		shell = "/bin/bash"
-		// 尝试使用 login shell
 		args = []string{"-l"}
 	}
 
 	cmd := exec.Command(shell, args...)
-	// 设置环境变量，模拟终端类型
 	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
 
-	// 3. 启动 PTY
+	// 2. 启动 PTY
 	tty, err := executor.StartTerminal(cmd)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error starting shell: "+err.Error()))
@@ -51,10 +56,10 @@ func HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tty.Close()
 
-	// 4. 管道处理
+	// 3. 管道转发
 	errChan := make(chan error, 2)
 
-	// PTY -> WebSocket (输出)
+	// PTY -> WS
 	go func() {
 		buf := make([]byte, 1024)
 		for {
@@ -63,7 +68,6 @@ func HandleTerminal(w http.ResponseWriter, r *http.Request) {
 				errChan <- err
 				return
 			}
-			// 发送二进制数据
 			if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
 				errChan <- err
 				return
@@ -71,7 +75,7 @@ func HandleTerminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// WebSocket -> PTY (输入 & 控制)
+	// WS -> PTY
 	go func() {
 		for {
 			mt, message, err := conn.ReadMessage()
@@ -79,23 +83,23 @@ func HandleTerminal(w http.ResponseWriter, r *http.Request) {
 				errChan <- err
 				return
 			}
-
+			// 处理输入
 			if mt == websocket.BinaryMessage {
-				// 二进制消息直接当作输入
 				tty.Write(message)
 			} else if mt == websocket.TextMessage {
-				// 文本消息解析为控制指令
-				var msg TerminalMessage
-				if err := json.Unmarshal(message, &msg); err == nil {
-					if msg.Type == "resize" {
-						tty.Resize(msg.Rows, msg.Cols)
-					}
+				// 处理 Resize 指令
+				var msg struct {
+					Type string `json:"type"`
+					Rows int    `json:"rows"`
+					Cols int    `json:"cols"`
+				}
+				if err := json.Unmarshal(message, &msg); err == nil && msg.Type == "resize" {
+					tty.Resize(msg.Rows, msg.Cols)
 				}
 			}
 		}
 	}()
 
-	// 等待退出
 	<-errChan
 	log.Println("Terminal session closed")
 }

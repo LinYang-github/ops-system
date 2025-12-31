@@ -13,6 +13,7 @@ import (
 
 	"ops-system/internal/worker/agent"
 	"ops-system/internal/worker/executor"
+	"ops-system/internal/worker/handler"
 	"ops-system/pkg/protocol"
 
 	"github.com/gorilla/websocket"
@@ -125,6 +126,8 @@ func (c *WorkerClient) readLoop() {
 			c.handleCommand(msg)
 		case protocol.TypeConfig: // [新增] 处理配置下发
 			c.handleConfig(msg)
+		case protocol.TypeLogFiles:
+			c.handleLogFiles(msg)
 		}
 	}
 }
@@ -189,11 +192,16 @@ func (c *WorkerClient) handleCommand(msg protocol.WSMessage) {
 	// 增加调试日志，方便观察指令是否到达
 	log.Printf("📥 Received WS Message Type: %s", msg.Type)
 
-	// 1. 通用 Map 解析 (为了灵活性)
-	var rawMap map[string]string
+	// 解析通用 Map 处理反向隧道
+	var rawMap map[string]interface{}
 	if err := json.Unmarshal(msg.Payload, &rawMap); err == nil {
-		if rawMap["action"] == "start_terminal" {
-			go c.startReverseTerminal(rawMap["server"], rawMap["session_id"])
+		if action, ok := rawMap["action"].(string); ok && action == "start_tunnel" {
+			// 提取参数
+			sessionID := rawMap["session_id"].(string)
+			tunnelType := rawMap["type"].(string)
+
+			// 启动隧道连接协程
+			go c.establishTunnel(sessionID, tunnelType, rawMap)
 			return
 		}
 	}
@@ -358,5 +366,77 @@ func (c *WorkerClient) SendStatusReport(report protocol.InstanceStatusReport) {
 	case c.SendChan <- msg:
 	default:
 		// 缓冲区满则丢弃，监控数据允许少量丢失
+	}
+}
+
+// [新增] 处理获取日志文件列表
+func (c *WorkerClient) handleLogFiles(msg protocol.WSMessage) {
+	var req protocol.LogFilesRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid payload")
+		return
+	}
+
+	// 调用 Executor 获取文件
+	files, err := executor.GetLogFiles(req.InstanceID)
+
+	resp := protocol.LogFilesResp{
+		InstanceID: req.InstanceID,
+		Files:      files,
+	}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+
+	// 发回响应 (带上原来的 Message ID)
+	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
+
+	select {
+	case c.SendChan <- respMsg:
+	default:
+		log.Printf("Send buffer full, dropped response for %s", msg.Id)
+	}
+}
+
+// [新增] 辅助：发送错误响应
+func (c *WorkerClient) sendErrorResponse(reqID string, errMsg string) {
+	resp := protocol.LogFilesResp{Error: errMsg}
+	msg, _ := protocol.NewWSMessage(protocol.TypeResponse, reqID, resp)
+	c.SendChan <- msg
+}
+
+// [新增] 建立反向隧道
+func (c *WorkerClient) establishTunnel(sessionID, tunnelType string, params map[string]interface{}) {
+	// 1. 构造隧道 URL
+	u, _ := url.Parse(c.MasterURL)
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	}
+	tunnelURL := fmt.Sprintf("%s/api/worker/tunnel?session_id=%s", u.String(), sessionID)
+
+	log.Printf("🚇 Establishing tunnel (%s): %s", tunnelType, tunnelURL)
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+c.Secret)
+
+	// 2. 发起连接
+	conn, _, err := websocket.DefaultDialer.Dial(tunnelURL, header)
+	if err != nil {
+		log.Printf("❌ Tunnel dial failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// 3. 根据类型移交控制权
+	if tunnelType == "log" {
+		instanceID, _ := params["instance_id"].(string)
+		logKey, _ := params["log_key"].(string)
+		// 调用 Handler 层的逻辑处理连接
+		handler.ServeLogStream(conn, instanceID, logKey)
+	} else if tunnelType == "terminal" {
+		handler.ServeTerminal(conn)
 	}
 }

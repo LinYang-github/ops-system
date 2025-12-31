@@ -29,7 +29,7 @@ func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 			// 1. WebSocket 相关
 			if strings.HasPrefix(path, "/api/ws") ||
 				strings.HasPrefix(path, "/api/worker/ws") ||
-				strings.HasPrefix(path, "/api/worker/terminal/relay") ||
+				strings.HasPrefix(path, "/api/worker/tunnel") ||
 				strings.HasPrefix(path, "/api/log/ws") ||
 				strings.HasPrefix(path, "/api/node/terminal") ||
 				strings.HasPrefix(path, "/api/instance/logs/stream") ||

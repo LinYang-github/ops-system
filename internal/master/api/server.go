@@ -309,8 +309,8 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, gui
 	// 前端页面
 	// 【修复点 4】确保路由注册时不出现 nil 指针调用
 	if h.gateway != nil {
-		mux.HandleFunc("/api/worker/ws", h.gateway.HandleConnection)
-		mux.HandleFunc("/api/worker/terminal/relay", h.gateway.HandleTerminalRelay)
+		mux.HandleFunc("/api/worker/ws", h.gateway.HandleConnection) // 现有的控制通道
+		mux.HandleFunc("/api/worker/tunnel", h.gateway.HandleTunnel) // 数据隧道通道
 	}
 
 	// 静态资源使用传入的 handler

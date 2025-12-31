@@ -2,10 +2,7 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
-	"log"
 	"net/http"
-	"net/url"
 	"time"
 
 	"ops-system/pkg/code"
@@ -13,6 +10,7 @@ import (
 	"ops-system/pkg/protocol"
 	"ops-system/pkg/response"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -53,44 +51,38 @@ func (h *ServerHandler) GetInstanceLogFiles(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 1. 获取实例 (使用 instMgr)
+	// 1. 获取实例
 	inst, ok := h.instMgr.GetInstance(instID)
 	if !ok {
 		response.Error(w, e.New(code.InstanceNotFound, "实例不存在", nil))
 		return
 	}
 
-	// 2. 获取节点 (使用 nodeMgr 获取 IP 和 Port)
-	node, exists := h.nodeMgr.GetNode(inst.NodeID)
-	if !exists {
-		response.Error(w, e.New(code.NodeOffline, "节点离线或不存在", nil))
+	// 2. 检查节点连接
+	if !h.gateway.IsConnected(inst.NodeID) {
+		response.Error(w, e.New(code.NodeOffline, "节点离线", nil))
 		return
 	}
 
-	// 3. 转发请求给 Worker
-	// 拼接 URL: http://IP:Port/api/log/files?instance_id=...
-	targetURL := fmt.Sprintf("http://%s:%d/api/log/files?instance_id=%s", node.IP, node.Port, instID)
+	// 3. [修复] 使用 WebSocket 同步调用 Worker
+	reqData := protocol.LogFilesRequest{InstanceID: instID}
+	var respData protocol.LogFilesResp
 
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(targetURL)
+	// 调用 Gateway 等待结果 (5秒超时)
+	err := h.gateway.SyncCall(inst.NodeID, protocol.TypeLogFiles, reqData, &respData, 5*time.Second)
+
 	if err != nil {
-		response.Error(w, e.New(code.NetworkError, fmt.Sprintf("连接 Worker 失败: %v", err), err))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		response.Error(w, e.New(code.ServerError, fmt.Sprintf("Worker 返回错误码: %d", resp.StatusCode), nil))
+		response.Error(w, e.New(code.NetworkError, "获取文件列表失败: "+err.Error(), err))
 		return
 	}
 
-	var result protocol.LogFilesResp
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		response.Error(w, e.New(code.ServerError, "解析 Worker 响应失败", err))
+	// 检查业务错误
+	if respData.Error != "" {
+		response.Error(w, e.New(code.ServerError, respData.Error, nil))
 		return
 	}
 
-	response.Success(w, result)
+	response.Success(w, respData)
 }
 
 const (
@@ -104,7 +96,7 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 )
 
-// handleInstanceLogStream 代理日志 WebSocket
+// handleInstanceLogStream 代理日志 WebSocket (反向隧道版)
 func (h *ServerHandler) InstanceLogStream(w http.ResponseWriter, r *http.Request) {
 	instID := r.URL.Query().Get("instance_id")
 	logKey := r.URL.Query().Get("log_key")
@@ -115,119 +107,76 @@ func (h *ServerHandler) InstanceLogStream(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	node, exists := h.nodeMgr.GetNode(inst.NodeID)
-	if !exists {
-		http.Error(w, "Node offline", 404)
+	// 1. 检查控制通道连接
+	if !h.gateway.IsConnected(inst.NodeID) {
+		http.Error(w, "Node offline (Control channel disconnected)", 404)
 		return
 	}
 
-	workerWsURL := fmt.Sprintf("ws://%s:%d/api/log/ws?instance_id=%s&log_key=%s",
-		node.IP, node.Port, instID, url.QueryEscape(logKey))
+	// 2. 准备会话
+	sessionID := uuid.NewString()
 
-	// 1. Dial Worker
-	workerConn, _, err := websocket.DefaultDialer.Dial(workerWsURL, nil)
+	// 3. 发送指令通知 Worker 反向连接
+	err := h.gateway.RequestTunnel(inst.NodeID, protocol.TunnelStartRequest{
+		SessionID:  sessionID,
+		Type:       "log",
+		InstanceID: instID,
+		LogKey:     logKey,
+	})
 	if err != nil {
-		log.Printf("[LogProxy] Dial failed: %v", err)
-		http.Error(w, fmt.Sprintf("Connect worker failed: %v", err), 502)
+		http.Error(w, "Failed to request tunnel: "+err.Error(), 500)
+		return
+	}
+
+	// 4. 等待 Worker 连接 (最多 10秒)
+	workerConn, err := h.gateway.AwaitTunnelConnection(sessionID, 10*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), 504)
 		return
 	}
 	defer workerConn.Close()
 
-	// 2. Upgrade Frontend
+	// 5. 升级前端连接
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[LogProxy] Upgrade failed: %v", err)
 		return
 	}
 	defer clientConn.Close()
 
-	// 3. 设置清理通道
-	// 使用 buffered channel 防止 goroutine 泄露
+	// 6. 双向管道 (Bridge)
+	// 使用 errChan 捕获任意一方的断开
 	errChan := make(chan error, 2)
 
-	// =====================================
-	// 管道 A: Worker -> Frontend (主要日志流)
-	// =====================================
+	// Worker (Log Source) -> Frontend
 	go func() {
-		defer func() {
-			// 确保退出时写入 error 以触发主程退出
-			// recover 防止向已关闭的 channel 写入 (虽然 buffer=2 基本不会发生)
-			recover()
-		}()
-
 		for {
-			// 读取 Worker 数据
-			// Worker 端负责发 Ping，这里不需要 SetReadDeadline，
-			// 或者可以设置一个较长的 ReadDeadline 防止 Worker 假死
-			mt, message, err := workerConn.ReadMessage()
+			mt, msg, err := workerConn.ReadMessage()
 			if err != nil {
 				errChan <- err
 				return
 			}
-
-			// 写入 Frontend
-			// 【关键修复】设置写入超时，防止前端网络卡死导致 Master 协程堆积
-			clientConn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := clientConn.WriteMessage(mt, message); err != nil {
+			if err := clientConn.WriteMessage(mt, msg); err != nil {
 				errChan <- err
 				return
 			}
 		}
 	}()
 
-	// =====================================
-	// 管道 B: Frontend -> Worker (心跳/控制流)
-	// =====================================
+	// Frontend (Control) -> Worker (e.g. Ping/Close)
 	go func() {
-		defer func() { recover() }()
-
-		// 【关键修复】设置读超时 + Pong 处理
-		// 如果前端意外断开且没有发 FIN 包，这里会超时退出
-		clientConn.SetReadDeadline(time.Now().Add(pongWait))
-		clientConn.SetPongHandler(func(string) error {
-			clientConn.SetReadDeadline(time.Now().Add(pongWait))
-			return nil
-		})
-
 		for {
-			mt, message, err := clientConn.ReadMessage()
+			mt, msg, err := clientConn.ReadMessage()
 			if err != nil {
 				errChan <- err
 				return
 			}
-
-			// 转发给 Worker
-			workerConn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := workerConn.WriteMessage(mt, message); err != nil {
+			if err := workerConn.WriteMessage(mt, msg); err != nil {
 				errChan <- err
 				return
 			}
 		}
 	}()
 
-	// =====================================
-	// 管道 C: 定时 Ping 前端 (保活)
-	// =====================================
-	// 增加一个协程专门给前端发 Ping，防止浏览器 WS 断开
-	go func() {
-		ticker := time.NewTicker(pingPeriod)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				clientConn.SetWriteDeadline(time.Now().Add(writeWait))
-				if err := clientConn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					// 写 Ping 失败，说明连接已断，不需要通过 errChan 通知，
-					// 因为上面的 管道B 读操作也会随之报错或超时
-					return
-				}
-			}
-		}
-	}()
-
-	// 4. 阻塞等待任意一方断开
-	// 只要有一个报错，主函数返回，defer 触发 Close，所有协程随之退出
-	err = <-errChan
-	log.Printf("[LogProxy] Stream closed: %v", err)
+	<-errChan
+	// 退出时 defer 会关闭两个连接
 }
