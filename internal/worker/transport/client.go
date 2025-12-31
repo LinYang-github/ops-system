@@ -128,6 +128,12 @@ func (c *WorkerClient) readLoop() {
 			c.handleConfig(msg)
 		case protocol.TypeLogFiles:
 			c.handleLogFiles(msg)
+		case protocol.TypeCleanupCache:
+			c.handleCleanupCache(msg)
+		case protocol.TypeScanOrphans:
+			c.handleScanOrphans(msg)
+		case protocol.TypeDeleteOrphans:
+			c.handleDeleteOrphans(msg)
 		}
 	}
 }
@@ -439,4 +445,78 @@ func (c *WorkerClient) establishTunnel(sessionID, tunnelType string, params map[
 	} else if tunnelType == "terminal" {
 		handler.ServeTerminal(conn)
 	}
+}
+
+// [新增] 处理清理缓存
+func (c *WorkerClient) handleCleanupCache(msg protocol.WSMessage) {
+	var req protocol.CleanupCacheRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid payload")
+		return
+	}
+
+	result, err := executor.CleanupPackageCache(req.Retain)
+
+	resp := protocol.CleanupCacheResponse{
+		FreedBytes:   result.FreedBytes,
+		DeletedFiles: result.DeletedFiles,
+	}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+
+	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
+	c.SendChan <- respMsg
+}
+
+// [新增] 处理扫描孤儿
+func (c *WorkerClient) handleScanOrphans(msg protocol.WSMessage) {
+	var req protocol.OrphanScanRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid payload")
+		return
+	}
+
+	// 转换 Map
+	sysMap := make(map[string]bool)
+	for _, s := range req.ValidSystems {
+		sysMap[s] = true
+	}
+	instMap := make(map[string]bool)
+	for _, i := range req.ValidInstances {
+		instMap[i] = true
+	}
+
+	items, err := executor.ScanOrphans(sysMap, instMap)
+
+	resp := protocol.OrphanScanNodeResponse{
+		Items: items,
+	}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+
+	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
+	c.SendChan <- respMsg
+}
+
+// [新增] 处理删除孤儿
+func (c *WorkerClient) handleDeleteOrphans(msg protocol.WSMessage) {
+	var req protocol.OrphanDeleteRequestWorker
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid payload")
+		return
+	}
+
+	count, err := executor.DeleteOrphans(req.Items)
+
+	resp := protocol.OrphanDeleteResponse{
+		DeletedCount: count,
+	}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+
+	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
+	c.SendChan <- respMsg
 }

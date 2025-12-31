@@ -299,6 +299,10 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, gui
 	mux.HandleFunc("/api/maintenance/orphans/delete", h.DeleteOrphans)
 	mux.HandleFunc("/api/maintenance/cache/clean", h.CleanCache)
 	mux.HandleFunc("/api/maintenance/cleanup_all", h.CleanupAllCache)
+
+	mux.HandleFunc("/api/maintenance/cleanup_all_cache", h.CleanupNodeCaches) // 对应 executeClean
+	mux.HandleFunc("/api/maintenance/scan_orphans", h.ScanNodeOrphans)        // 对应 openGcDialog (POST)
+	mux.HandleFunc("/api/maintenance/delete_orphans", h.DeleteNodeOrphans)    // 对应 executeDelete
 	// --- WebSocket (Frontend) ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 	// --- 静态资源 ---
