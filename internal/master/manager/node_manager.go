@@ -321,3 +321,17 @@ func (nm *NodeManager) SetOfflineThreshold(d time.Duration) {
 		nm.offlineThreshold = d
 	}
 }
+
+// MarkOffline 立即标记节点离线
+func (nm *NodeManager) MarkOffline(id string) {
+	if val, ok := nm.nodeCache.Load(id); ok {
+		node := val.(protocol.NodeInfo)
+		node.Status = "offline"
+		node.CPUUsage = 0
+		node.MemUsage = 0
+		nm.nodeCache.Store(id, node)
+
+		// 同步写回数据库，确保重启后状态一致
+		nm.db.Exec("UPDATE node_infos SET status = 'offline' WHERE id = ?", id)
+	}
+}

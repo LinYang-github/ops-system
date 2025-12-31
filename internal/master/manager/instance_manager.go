@@ -110,7 +110,8 @@ func (im *InstanceManager) GetInstance(id string) (*protocol.InstanceInfo, bool)
 
 // GetSystemInstances 获取某个系统下的所有实例
 func (im *InstanceManager) GetSystemInstances(systemID string) ([]protocol.InstanceInfo, error) {
-	query := `SELECT id, system_id, node_ip, service_name, service_version, status, pid, uptime FROM instance_infos WHERE system_id = ?`
+	// 修复点：将 node_ip 改为 node_id
+	query := `SELECT id, system_id, node_id, service_name, service_version, status, pid, uptime FROM instance_infos WHERE system_id = ?`
 	rows, err := im.db.Query(query, systemID)
 	if err != nil {
 		return nil, err
@@ -120,7 +121,10 @@ func (im *InstanceManager) GetSystemInstances(systemID string) ([]protocol.Insta
 	var instances []protocol.InstanceInfo
 	for rows.Next() {
 		var i protocol.InstanceInfo
-		rows.Scan(&i.ID, &i.SystemID, &i.NodeID, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
+		err := rows.Scan(&i.ID, &i.SystemID, &i.NodeID, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
+		if err != nil {
+			continue
+		}
 
 		if val, ok := im.metricsCache.Load(i.ID); ok {
 			m := val.(realTimeMetrics)
@@ -136,13 +140,22 @@ func (im *InstanceManager) GetSystemInstances(systemID string) ([]protocol.Insta
 
 // GetAllInstances 获取所有实例 (供 SystemManager 组装视图使用)
 func (im *InstanceManager) GetAllInstances() map[string][]*protocol.InstanceInfo {
-	instRows, _ := im.db.Query(`SELECT id, system_id, node_ip, service_name, service_version, status, pid, uptime FROM instance_infos`)
+	// 修复点：将 node_ip 改为 node_id
+	instRows, err := im.db.Query(`SELECT id, system_id, node_id, service_name, service_version, status, pid, uptime FROM instance_infos`)
+	if err != nil {
+		log.Printf("[Error] GetAllInstances query failed: %v", err)
+		return make(map[string][]*protocol.InstanceInfo)
+	}
 	defer instRows.Close()
 
 	instMap := make(map[string][]*protocol.InstanceInfo)
 	for instRows.Next() {
 		var i protocol.InstanceInfo
-		instRows.Scan(&i.ID, &i.SystemID, &i.NodeID, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
+		// 修复点：对应 Scan node_id
+		err := instRows.Scan(&i.ID, &i.SystemID, &i.NodeID, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
+		if err != nil {
+			continue
+		}
 
 		if val, ok := im.metricsCache.Load(i.ID); ok {
 			m := val.(realTimeMetrics)

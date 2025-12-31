@@ -3,6 +3,7 @@ package manager
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -93,39 +94,55 @@ func (sm *SystemManager) DeleteModule(modID string) error {
 // GetFullView 聚合视图 (需要 InstanceManager 提供实例数据)
 func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 	// 1. 获取所有系统
-	sysRows, _ := sm.db.Query(`SELECT id, name, description, create_time FROM system_infos ORDER BY create_time DESC`)
+	sysRows, err := sm.db.Query(`SELECT id, name, description, create_time FROM system_infos ORDER BY create_time DESC`)
+	if err != nil {
+		return []protocol.SystemView{}
+	}
 	defer sysRows.Close()
 	var systems []protocol.SystemInfo
 	for sysRows.Next() {
 		var s protocol.SystemInfo
-		sysRows.Scan(&s.ID, &s.Name, &s.Description, &s.CreateTime)
+		if err := sysRows.Scan(&s.ID, &s.Name, &s.Description, &s.CreateTime); err != nil {
+			continue
+		}
 		systems = append(systems, s)
 	}
 
-	// 2. Modules
-	// 增加新列查询
-	modRows, _ := sm.db.Query(`SELECT id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout FROM system_modules`)
-	defer modRows.Close()
-
-	modMap := make(map[string][]*protocol.SystemModule)
-	for modRows.Next() {
-		var m protocol.SystemModule
-		// Scan 所有字段 (注意处理 NULL，这里简化假设存入时有默认值或空串)
-		// 如果数据库里可能有 NULL，可以使用 sql.NullString 扫描后再赋值
-		var rType, rTarget sql.NullString
-		var rTimeout sql.NullInt64
-
-		modRows.Scan(&m.ID, &m.SystemID, &m.ModuleName, &m.PackageName, &m.PackageVersion, &m.Description, &m.StartOrder, &rType, &rTarget, &rTimeout)
-
-		m.ReadinessType = rType.String
-		m.ReadinessTarget = rTarget.String
-		m.ReadinessTimeout = int(rTimeout.Int64)
-
-		val := m
-		modMap[m.SystemID] = append(modMap[m.SystemID], &val)
+	// 2. Modules (增加错误校验和字段顺序对齐)
+	modRows, err := sm.db.Query(`SELECT id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout FROM system_modules`)
+	if err != nil {
+		log.Printf("[Error] Query system_modules failed: %v", err)
+	} else {
+		defer modRows.Close()
 	}
 
-	// 3. 获取所有实例 (调用 InstanceManager)
+	modMap := make(map[string][]*protocol.SystemModule)
+	if modRows != nil {
+		for modRows.Next() {
+			var m protocol.SystemModule
+			var rType, rTarget sql.NullString
+			var rTimeout sql.NullInt64
+
+			// 严格按 SELECT 顺序进行 Scan
+			err := modRows.Scan(
+				&m.ID, &m.SystemID, &m.ModuleName, &m.PackageName, &m.PackageVersion,
+				&m.Description, &m.StartOrder, &rType, &rTarget, &rTimeout,
+			)
+			if err != nil {
+				log.Printf("[Warn] Scan module failed: %v", err)
+				continue
+			}
+
+			m.ReadinessType = rType.String
+			m.ReadinessTarget = rTarget.String
+			m.ReadinessTimeout = int(rTimeout.Int64)
+
+			val := m
+			modMap[m.SystemID] = append(modMap[m.SystemID], &val)
+		}
+	}
+
+	// 3. 获取所有实例
 	var instMap map[string][]*protocol.InstanceInfo
 	if im != nil {
 		instMap = im.GetAllInstances()
@@ -133,10 +150,9 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 		instMap = make(map[string][]*protocol.InstanceInfo)
 	}
 
-	// 4. 组装
+	// 4. 组装结果
 	var result []protocol.SystemView
-	for i := range systems {
-		sys := systems[i]
+	for _, sys := range systems {
 		view := protocol.SystemView{
 			SystemInfo: &sys,
 			Modules:    modMap[sys.ID],

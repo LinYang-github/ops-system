@@ -60,21 +60,18 @@ func (c *WorkerClient) connectLoop() {
 			u.Scheme = "ws"
 		}
 
-		// 拼接路径 (自动处理斜杠)
-		// 注意: Master 端的路由是 /api/worker/ws
-		if !strings.HasSuffix(u.Path, "/") {
-			u.Path += "/"
-		}
-		u.Path = strings.TrimRight(u.Path, "/") + "/api/worker/ws"
-
+		// 安全拼接路径
+		u.Path = "/api/worker/ws"
 		wsURL := u.String()
-		log.Printf("Connecting to Master: %s ...", wsURL)
 
-		// 2. 建立连接
 		header := http.Header{}
 		header.Set("Authorization", "Bearer "+c.Secret)
 
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		// 增加拨号超时
+		dialer := websocket.DefaultDialer
+		dialer.HandshakeTimeout = 5 * time.Second
+
+		conn, _, err := dialer.Dial(wsURL, header)
 		if err != nil {
 			log.Printf("⚠️ Connect failed: %v. Retry in 5s...", err)
 			time.Sleep(5 * time.Second)

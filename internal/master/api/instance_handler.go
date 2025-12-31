@@ -31,9 +31,7 @@ func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action 
 		Action:     action,
 	}
 
-	// 关键点：Gateway 的 conns map 目前是用 IP 存的
-	// 所以这里必须传 node.IP 而不是 node.ID
-	return h.gateway.SendCommand(node.IP, workerReq)
+	return h.gateway.SendCommand(node.ID, workerReq)
 }
 
 // ==========================================
@@ -84,8 +82,8 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	// 2. 检查节点状态
 	// ==========================================
 	// 确保节点在线且 WebSocket 连接已建立
-	if !h.gateway.IsConnected(node.IP) {
-		log.Printf("目标节点未连接 (WebSocket Disconnected)%s", node.IP)
+	if !h.gateway.IsConnected(node.ID) {
+		log.Printf("[Deploy] 目标节点未连接 (WebSocket Disconnected): ID=%s, IP=%s", node.ID, node.IP)
 		response.Error(w, e.New(code.NodeOffline, "目标节点未连接 (WebSocket Disconnected)", nil))
 		return
 	}
@@ -163,7 +161,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 使用 WebSocket 下发
-	if err := h.gateway.SendCommand(node.IP, workerReq); err != nil {
+	if err := h.gateway.SendCommand(node.ID, workerReq); err != nil {
 		// 失败回滚状态
 		h.instMgr.UpdateInstanceStatus(instanceID, "error", 0)
 
