@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"ops-system/pkg/protocol"
@@ -216,4 +217,67 @@ func (pm *PackageManager) RegisterPackageMetadata(manifest *protocol.ServiceMani
 func (pm *PackageManager) GetPackageStream(name, version string) (io.ReadCloser, error) {
 	key := filepath.Join(name, fmt.Sprintf("%s.zip", version))
 	return pm.store.Get(key)
+}
+
+// OrphanFile 孤儿文件定义
+type OrphanFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+// ScanOrphans 扫描孤儿文件 (存储中有，但 DB 中没有)
+func (pm *PackageManager) ScanOrphans() ([]OrphanFile, error) {
+	// 1. 获取 DB 中所有已知的包 key (name/version.zip)
+	rows, err := pm.db.Query("SELECT name, version FROM package_infos")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	knownFiles := make(map[string]bool)
+	for rows.Next() {
+		var name, version string
+		if err := rows.Scan(&name, &version); err == nil {
+			// 构造存储 Key，注意路径分隔符标准化
+			key := fmt.Sprintf("%s/%s.zip", name, version)
+			knownFiles[key] = true
+		}
+	}
+
+	// 2. 遍历存储后端的所有文件
+	allFiles, err := pm.store.ListFiles()
+	if err != nil {
+		return nil, err
+	}
+
+	var orphans []OrphanFile
+	for _, f := range allFiles {
+		// 忽略非 zip 文件 (可能是目录标记或其他)
+		if !strings.HasSuffix(f.Name, ".zip") {
+			continue
+		}
+
+		// 存储返回的 Name 可能是 Windows 风格，统一转为 /
+		normalizedKey := strings.ReplaceAll(f.Name, "\\", "/")
+
+		if !knownFiles[normalizedKey] {
+			orphans = append(orphans, OrphanFile{
+				Path: f.Name,
+				Size: f.Size,
+			})
+		}
+	}
+
+	return orphans, nil
+}
+
+// DeleteOrphans 删除指定的孤儿文件
+func (pm *PackageManager) DeleteOrphans(files []string) error {
+	for _, f := range files {
+		if err := pm.store.Delete(f); err != nil {
+			// 记录错误但继续删除下一个
+			fmt.Printf("Failed to delete orphan %s: %v\n", f, err)
+		}
+	}
+	return nil
 }

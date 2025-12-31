@@ -145,7 +145,7 @@ func (am *AlertManager) evaluate() {
 		} else if rule.TargetType == "instance" {
 			for _, inst := range instances {
 				val, triggered := checkCondition(rule, inst.Status, inst.CpuUsage, float64(inst.MemUsage))
-				targetName := fmt.Sprintf("%s (%s)", inst.ServiceName, inst.NodeIP)
+				targetName := fmt.Sprintf("%s (%s)", inst.ServiceName, inst.NodeID)
 				am.handleState(rule, inst.ID, targetName, val, triggered, now)
 			}
 		}

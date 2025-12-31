@@ -4,6 +4,7 @@ import (
 	"ops-system/internal/master/manager"
 	"ops-system/internal/master/monitor"
 	"ops-system/internal/master/scheduler"
+	"ops-system/internal/master/transport" // [新增] 引入 transport 包以使用 WorkerGateway
 )
 
 // ServerHandler 持有所有业务逻辑依赖
@@ -20,6 +21,7 @@ type ServerHandler struct {
 	monitorStore *monitor.MemoryTSDB
 	exportMgr    *manager.ExportManager
 	scheduler    *scheduler.Scheduler
+	gateway      *transport.WorkerGateway
 	secretKey    string
 }
 
@@ -36,6 +38,7 @@ func NewServerHandler(
 	export *manager.ExportManager,
 	monitor *monitor.MemoryTSDB,
 	scheduler *scheduler.Scheduler,
+	gateway *transport.WorkerGateway,
 	secretKey string,
 ) *ServerHandler {
 	return &ServerHandler{
@@ -50,6 +53,7 @@ func NewServerHandler(
 		exportMgr:    export,
 		monitorStore: monitor,
 		scheduler:    scheduler,
+		gateway:      gateway,
 		secretKey:    secretKey,
 	}
 }

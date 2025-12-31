@@ -12,6 +12,7 @@ import (
 	"ops-system/internal/master/middleware"
 	"ops-system/internal/master/monitor"
 	"ops-system/internal/master/scheduler"
+	"ops-system/internal/master/transport" // [新增] 引入 Transport 层
 	"ops-system/internal/master/ws"
 
 	"ops-system/pkg/config"
@@ -20,8 +21,7 @@ import (
 )
 
 // 全局 Manager 实例变量
-// 注意：虽然定义在这里，但在 Handler 中我们是通过 ServerHandler 结构体注入使用的，
-// 这里保留变量主要是为了方便某些非 Handler 的后台任务（如 server.go 里的匿名 func）引用。
+// 注意：虽然定义在这里，但在 Handler 中我们是通过 ServerHandler 结构体注入使用的
 var (
 	sysManager    *manager.SystemManager
 	instManager   *manager.InstanceManager
@@ -33,6 +33,7 @@ var (
 	exportManager *manager.ExportManager
 	monitorStore  *monitor.MemoryTSDB
 	alertManager  *manager.AlertManager
+	// gateway       *transport.WorkerGateway // 可选：如果需要在 Server 级引用
 )
 
 // 全局上传路径，供静态资源服务使用
@@ -97,13 +98,17 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	backupManager = manager.NewBackupManager(database, cfg.Storage.UploadDir)
 	exportManager = manager.NewExportManager(sysManager, pkgManager, instManager, cfg.Storage.UploadDir)
 
-	// 初始 NodeManager (使用 CLI/Config 中的默认阈值)
+	// 初始 NodeManager
 	nodeManager = manager.NewNodeManager(database, monitorStore, cfg.Logic.NodeOfflineThreshold)
 
 	// AlertManager 依赖上述已创建的实例
 	alertManager = manager.NewAlertManager(database, nodeManager, instManager)
 
-	// 6. 尝试加载动态配置 (热更新覆盖)
+	// 6. [新增] 初始化 Worker Gateway (WebSocket 通信层)
+	// Gateway 依赖 NodeManager 处理心跳
+	workerGateway := transport.NewWorkerGateway(nodeManager, configManager)
+
+	// 7. 尝试加载动态配置 (热更新覆盖)
 	if globalCfg, err := configManager.GetGlobalConfig(); err == nil {
 		log.Printf("Loaded dynamic config from DB, applying updates...")
 
@@ -117,11 +122,10 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 			nodeManager.SetOfflineThreshold(time.Duration(globalCfg.Logic.NodeOfflineThreshold) * time.Second)
 		}
 	} else {
-		// 如果 DB 没配置，就保持步骤 4 和 5 中的默认状态，不需要做任何事
 		log.Printf("No dynamic config in DB, using startup flags/defaults.")
 	}
 
-	// 7. 启动后台任务：日志自动清理
+	// 8. 启动后台任务：日志自动清理
 	go func() {
 		// 启动时先执行一次
 		currentCfg, _ := configManager.GetGlobalConfig()
@@ -139,10 +143,11 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		}
 	}()
 
-	// 8. 初始化调度器
+	// 9. 初始化调度器
 	sched := scheduler.NewScheduler()
 
-	// 9. 初始化全局 Handler 容器
+	// 10. 初始化全局 Handler 容器
+	// 【关键修改】注入 workerGateway
 	serverHandler := NewServerHandler(
 		sysManager,
 		instManager,
@@ -155,13 +160,14 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		exportManager,
 		monitorStore,
 		sched,
+		workerGateway,      // [新增] 注入 Gateway
 		cfg.Auth.SecretKey, // 传入 Secret 用于登录接口
 	)
 
-	// 10. 启动 WebSocket Hub
+	// 11. 启动 WebSocket Hub (用于前端推送)
 	go ws.GlobalHub.Run()
 
-	// 11. 创建路由器并注册路由
+	// 12. 创建路由器并注册路由
 	mux := http.NewServeMux()
 	registerRoutes(mux, serverHandler, cfg.Storage.UploadDir, assets)
 
@@ -171,30 +177,24 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	// 中间件链式组装
 	// =========================================================
 
-	// 1. 起点是路由器 (Mux)
 	var handler http.Handler = mux
 
-	// 2. 包裹鉴权中间件 (Auth)
-	// AuthMiddleware 接收 handler，返回包裹后的 handler
+	// 包裹鉴权中间件 (Auth)
 	handler = middleware.AuthMiddleware(cfg.Auth.SecretKey)(handler)
 
-	// 3. 包裹超时中间件 (Timeout)
-	// 只有当配置了超时时间才包裹
-	// 注意：这里一定要确保 handler 不为 nil (上面已经赋值了，所以是安全的)
-	if cfg.Server.APITimeout > 0 { // 假设你在 config 中定义了 APITimeout
+	// 包裹超时中间件 (Timeout)
+	if cfg.Server.APITimeout > 0 {
 		timeoutDuration := time.Duration(cfg.Server.APITimeout) * time.Second
 		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
 	} else if cfg.Logic.HTTPClientTimeout > 0 {
-		// 兼容逻辑：如果 Server.APITimeout 没配，暂用 HTTPClientTimeout 或默认值
-		// 建议在 config/loader.go 里给 Server.APITimeout 一个默认值 10
 		timeoutDuration := time.Duration(cfg.Logic.HTTPClientTimeout) * time.Second
 		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
 	}
 
 	server := &http.Server{
 		Addr:         cfg.Server.Port,
-		Handler:      handler, // 使用最终组装好的 Handler
-		ReadTimeout:  0,       // 必须为 0，否则大文件/WS 会断
+		Handler:      handler,
+		ReadTimeout:  0, // 必须为 0，否则大文件/WS 会断
 		WriteTimeout: 0,
 	}
 
@@ -202,18 +202,19 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 }
 
 // registerRoutes 注册所有路由
-// h: 包含所有业务逻辑的 Handler 实例
 func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, assets fs.FS) {
+	// --- Worker 通信相关 ---
+	mux.HandleFunc("/api/worker/heartbeat", h.HandleHeartbeat)   // 保留兼容 HTTP
+	mux.HandleFunc("/api/worker/ws", h.gateway.HandleConnection) // [新增] Worker WebSocket 接入点
+
 	// --- Node 相关 ---
-	mux.HandleFunc("/api/worker/heartbeat", h.HandleHeartbeat)
 	mux.HandleFunc("/api/nodes", h.ListNodes)
 	mux.HandleFunc("/api/nodes/add", h.AddNode)
 	mux.HandleFunc("/api/nodes/delete", h.DeleteNode)
 	mux.HandleFunc("/api/nodes/rename", h.RenameNode)
 	mux.HandleFunc("/api/nodes/reset_name", h.ResetNodeName)
-	mux.HandleFunc("/api/ctrl/cmd", h.TriggerCmd)
-	mux.HandleFunc("/api/node/terminal", h.HandleNodeTerminal) // Web终端
-	mux.HandleFunc("/api/nodes/clean_cache", h.CleanNodeCache)
+	mux.HandleFunc("/api/ctrl/cmd", h.TriggerCmd)              // 已改为 WS 下发
+	mux.HandleFunc("/api/node/terminal", h.HandleNodeTerminal) // 暂依赖直连 IP
 
 	// --- System 配置相关 ---
 	mux.HandleFunc("/api/systems", h.GetSystems)
@@ -224,9 +225,9 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/systems/export", h.ExportSystem)
 
 	// --- Instance 运行相关 ---
-	mux.HandleFunc("/api/deploy", h.DeployInstance)
-	mux.HandleFunc("/api/deploy/external", h.RegisterExternal) // 纳管
-	mux.HandleFunc("/api/instance/action", h.InstanceAction)
+	mux.HandleFunc("/api/deploy", h.DeployInstance)            // 已改为 WS 下发
+	mux.HandleFunc("/api/deploy/external", h.RegisterExternal) // 已改为 WS 下发
+	mux.HandleFunc("/api/instance/action", h.InstanceAction)   // 已改为 WS 下发
 	mux.HandleFunc("/api/instance/status_report", h.WorkerStatusReport)
 	mux.HandleFunc("/api/systems/action", h.SystemAction) // 批量操作
 
@@ -235,7 +236,6 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/packages", h.ListPackages)
 	mux.HandleFunc("/api/packages/delete", h.DeletePackage)
 	mux.HandleFunc("/api/packages/manifest", h.GetPackageManifest)
-	// 上传预签名与回调
 	mux.HandleFunc("/api/package/presign", h.PresignUpload)
 	mux.HandleFunc("/api/package/callback", h.UploadCallback)
 	mux.HandleFunc("/api/upload/direct", h.HandleDirectUpload)
@@ -280,14 +280,18 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/alerts/events/clear", h.ClearEvents)
 
 	mux.HandleFunc("/api/login", h.HandleLogin)
-	mux.HandleFunc("/api/maintenance/cleanup_all_cache", h.CleanAllNodesCache)
-	mux.HandleFunc("/api/maintenance/scan_orphans", h.ScanAllOrphans)
-	mux.HandleFunc("/api/maintenance/delete_orphans", h.DeleteOrphans)
-	// --- WebSocket ---
-	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 
+	// --- Maintenance (维护) 相关---
+	mux.HandleFunc("/api/maintenance/orphans", h.ScanOrphans)
+	mux.HandleFunc("/api/maintenance/orphans/delete", h.DeleteOrphans)
+	mux.HandleFunc("/api/maintenance/cache/clean", h.CleanCache)
+	mux.HandleFunc("/api/maintenance/cleanup_all", h.CleanupAllCache)
+	// --- WebSocket (Frontend) ---
+	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
+	// Worker 终端反向接入点
+	mux.HandleFunc("/api/worker/terminal/relay", h.gateway.HandleTerminalRelay)
 	// --- 静态资源 ---
-	// 文件下载 (uploadPath 来自参数，不再依赖全局变量)
+	// 文件下载
 	fsUploads := http.FileServer(http.Dir(uploadPath))
 	mux.Handle("/download/", http.StripPrefix("/download/", fsUploads))
 

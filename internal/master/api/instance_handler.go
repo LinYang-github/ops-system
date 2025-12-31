@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -18,14 +19,13 @@ import (
 // 私有辅助方法
 // ==========================================
 
-// sendInstanceCommand 向 Worker 发送实例控制指令
+// sendInstanceCommand 向 Worker 发送实例控制指令 (WebSocket 模式)
 func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action string) error {
-	// 1. 获取节点信息
-	// 注意：在 NodeID 改造后，inst.NodeIP 字段实际上存储的是 NodeID
-	// 我们需要用这个 ID 去内存缓存中查出当前真实的物理 IP
-	node, exists := h.nodeMgr.GetNode(inst.NodeIP)
-	if !exists {
-		return fmt.Errorf("node %s offline or not found", inst.NodeIP)
+	// 1. 检查节点是否在线 (使用注入的 nodeMgr)
+	// 虽然 Gateway 内部也会检查连接是否存在，但这里先检查业务状态更稳妥
+	node, exists := h.nodeMgr.GetNode(inst.NodeID)
+	if !exists || node.Status != "online" {
+		return fmt.Errorf("node %s offline", inst.NodeID)
 	}
 
 	// 2. 构造请求
@@ -33,11 +33,10 @@ func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action 
 		InstanceID: inst.ID,
 		Action:     action,
 	}
-	reqBytes, _ := json.Marshal(workerReq)
 
-	// 3. 发送 HTTP 请求 (使用查出来的真实 IP)
-	targetURL := fmt.Sprintf("http://%s:%d/api/instance/action", node.IP, node.Port)
-	return utils.PostJSON(targetURL, reqBytes)
+	// 3. 通过 WebSocket 网关发送指令
+	// 对应 Worker 端: 接收 TypeCommand -> 解析 InstanceActionRequest -> 执行 HandleAction
+	return h.gateway.SendCommand(inst.NodeID, workerReq)
 }
 
 // ==========================================
@@ -47,11 +46,9 @@ func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action 
 // DeployInstance 部署实例
 // POST /api/deploy
 func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
-	// 定义请求结构 (兼容 auto 模式)
 	type DeployReq struct {
 		SystemID       string `json:"system_id"`
-		NodeID         string `json:"node_id"` // 指定的节点 ID
-		NodeIP         string `json:"node_ip"` // 仅用于判断 "auto"
+		NodeID         string `json:"node_id"`
 		ServiceName    string `json:"service_name"`
 		ServiceVersion string `json:"service_version"`
 	}
@@ -66,11 +63,11 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	// ==========================================
 	// 1. 调度逻辑 (自动选择节点)
 	// ==========================================
-	if req.NodeIP == "auto" {
-		// 获取所有节点数据的快照
+	if req.NodeID == "auto" {
+		// 获取所有节点数据的快照 (包含实时 CPU/Mem)
 		allNodes := h.nodeMgr.GetAllNodes()
 
-		// 调度算法选择，返回最佳节点的 ID
+		// 调度算法选择
 		selectedID, found := h.scheduler.SelectBestNode(allNodes)
 		if !found {
 			response.Error(w, e.New(code.NodeOffline, "自动调度失败: 无可用在线节点", nil))
@@ -78,25 +75,26 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		targetNodeID = selectedID
 	} else {
-		if req.NodeID == "" {
-			response.Error(w, e.New(code.ParamError, "必须指定 node_id 或 node_ip=auto", nil))
-			return
-		}
 		targetNodeID = req.NodeID
 	}
 
-	// ==========================================
-	// 2. 检查节点状态 & 获取真实 IP
-	// ==========================================
 	node, exists := h.nodeMgr.GetNode(targetNodeID)
 	if !exists || node.Status != "online" {
-		response.Error(w, e.New(code.NodeOffline, "目标节点不在线", nil))
+		response.Error(w, e.New(code.NodeOffline, "节点离线或不存在", nil))
+	}
+
+	// ==========================================
+	// 2. 检查节点状态
+	// ==========================================
+	// 确保节点在线且 WebSocket 连接已建立
+	if !h.gateway.IsConnected(node.IP) {
+		log.Printf("目标节点未连接 (WebSocket Disconnected)%s", node.IP)
+		response.Error(w, e.New(code.NodeOffline, "目标节点未连接 (WebSocket Disconnected)", nil))
 		return
 	}
 
 	// ==========================================
 	// 3. 配置融合 (核心逻辑)
-	//    优先级: SystemModule (编排设置) > ServiceManifest (包默认值)
 	// ==========================================
 
 	// 3.1 获取服务包默认配置
@@ -140,11 +138,10 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	instanceID := fmt.Sprintf("inst-%d", time.Now().UnixNano())
 
 	// 预先入库 (状态为 deploying)
-	// 【注意】这里 NodeIP 字段存的是 NodeID，为了避免修改 DB Schema，暂复用该字段
 	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID:             instanceID,
 		SystemID:       req.SystemID,
-		NodeIP:         targetNodeID, // Store ID
+		NodeID:         targetNodeID,
 		ServiceName:    req.ServiceName,
 		ServiceVersion: req.ServiceVersion,
 		Status:         "deploying",
@@ -154,40 +151,34 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	h.broadcastUpdate()
 
 	// ==========================================
-	// 5. 下发指令给 Worker
+	// 5. 下发指令给 Worker (WebSocket)
 	// ==========================================
 
 	workerReq := protocol.DeployRequest{
-		InstanceID:  instanceID,
-		SystemName:  req.SystemID,
-		ServiceName: req.ServiceName,
-		Version:     req.ServiceVersion,
-		DownloadURL: downloadURL,
-		// 将融合后的健康检查配置下发给 Worker
+		InstanceID:       instanceID,
+		SystemName:       req.SystemID,
+		ServiceName:      req.ServiceName,
+		Version:          req.ServiceVersion,
+		DownloadURL:      downloadURL,
 		ReadinessType:    finalType,
 		ReadinessTarget:  finalTarget,
 		ReadinessTimeout: finalTimeout,
 	}
 
-	reqBody, _ := json.Marshal(workerReq)
-
-	// 使用查出来的真实 IP 拼接 URL
-	targetURL := fmt.Sprintf("http://%s:%d/api/deploy", node.IP, node.Port)
-
-	// 发送请求 (Worker 异步处理)
-	if err := utils.PostJSON(targetURL, reqBody); err != nil {
+	// 使用 WebSocket 下发
+	if err := h.gateway.SendCommand(node.IP, workerReq); err != nil {
 		// 失败回滚状态
 		h.instMgr.UpdateInstanceStatus(instanceID, "error", 0)
 
 		h.logMgr.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, "Failed: "+err.Error(), "fail")
 		h.broadcastUpdate()
 
-		response.Error(w, e.New(code.DeployFailed, fmt.Sprintf("Worker 部署请求失败: %v", err), err))
+		response.Error(w, e.New(code.DeployFailed, fmt.Sprintf("指令下发失败: %v", err), err))
 		return
 	}
 
 	// 记录成功日志
-	logDetail := fmt.Sprintf("Node: %s (%s), Ver: %s, ID: %s", node.Name, node.IP, req.ServiceVersion, instanceID)
+	logDetail := fmt.Sprintf("Node: %s, Ver: %s, ID: %s", targetNodeID, req.ServiceVersion, instanceID)
 	h.logMgr.RecordLog(utils.GetClientIP(r), "deploy_instance", "instance", req.ServiceName, logDetail, "success")
 
 	response.Success(w, nil)
@@ -198,8 +189,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request) {
 	type RegExtReq struct {
 		SystemID string                  `json:"system_id"`
-		NodeID   string                  `json:"node_id"` // 使用 NodeID
-		NodeIP   string                  `json:"node_ip"` // 兼容字段
+		NodeID   string                  `json:"node_id"`
 		Config   protocol.ExternalConfig `json:"config"`
 	}
 	var req RegExtReq
@@ -208,17 +198,9 @@ func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 优先使用 NodeID，如果没有则尝试 NodeIP (兼容旧前端)
-	targetID := req.NodeID
-	if targetID == "" {
-		// 如果前端只传了 IP，尝试反向查找 (不推荐，但为了健壮性)
-		// 这里暂且认为 req.NodeIP 就是 ID，或者调用者保证传对了
-		targetID = req.NodeIP
-	}
-
-	node, exists := h.nodeMgr.GetNode(targetID)
-	if !exists || node.Status != "online" {
-		response.Error(w, e.New(code.NodeOffline, "目标节点不在线", nil))
+	// 检查连接
+	if !h.gateway.IsConnected(req.NodeID) {
+		response.Error(w, e.New(code.NodeOffline, "目标节点未连接", nil))
 		return
 	}
 
@@ -228,27 +210,24 @@ func (h *ServerHandler) RegisterExternal(w http.ResponseWriter, r *http.Request)
 	h.instMgr.RegisterInstance(&protocol.InstanceInfo{
 		ID:             instanceID,
 		SystemID:       req.SystemID,
-		NodeIP:         targetID, // Store ID
+		NodeID:         req.NodeID,
 		ServiceName:    req.Config.Name,
 		ServiceVersion: "external",
 		Status:         "stopped",
 	})
 	h.broadcastUpdate()
 
-	// 发送给 Worker
+	// 发送给 Worker (WebSocket)
 	workerReq := protocol.RegisterExternalRequest{
 		InstanceID: instanceID,
 		SystemName: req.SystemID,
 		Config:     req.Config,
 	}
-	reqBytes, _ := json.Marshal(workerReq)
 
-	targetURL := fmt.Sprintf("http://%s:%d/api/external/register", node.IP, node.Port)
-
-	if err := utils.PostJSON(targetURL, reqBytes); err != nil {
+	if err := h.gateway.SendCommand(req.NodeID, workerReq); err != nil {
 		h.instMgr.UpdateInstanceStatus(instanceID, "error", 0)
 		h.broadcastUpdate()
-		response.Error(w, e.New(code.DeployFailed, fmt.Sprintf("Worker 纳管请求失败: %v", err), err))
+		response.Error(w, e.New(code.DeployFailed, fmt.Sprintf("指令下发失败: %v", err), err))
 		return
 	}
 
@@ -272,15 +251,33 @@ func (h *ServerHandler) InstanceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 发送指令
-	if err := h.sendInstanceCommand(inst, req.Action); err != nil {
-		h.logMgr.RecordLog(utils.GetClientIP(r), req.Action+"_instance", "instance", inst.ServiceName, "Failed: "+err.Error(), "fail")
-		response.Error(w, e.New(code.ActionFailed, fmt.Sprintf("发送指令失败: %v", err), err))
+	// 仅销毁操作可以直接从 DB 删除（如果节点离线也能删）
+	// 但通常最好也通知 Worker 清理
+	if req.Action == "destroy" && !h.gateway.IsConnected(inst.NodeID) {
+		// 节点不在线，强制删除元数据
+		h.instMgr.RemoveInstance(req.InstanceID)
+		h.broadcastUpdate()
+		h.logMgr.RecordLog(utils.GetClientIP(r), "destroy_instance", "instance", inst.ServiceName, "Force delete (node offline)", "success")
+		response.Success(w, nil)
 		return
 	}
 
-	// 仅销毁操作直接从 DB 删除
+	// 发送指令
+	if err := h.sendInstanceCommand(inst, req.Action); err != nil {
+		h.logMgr.RecordLog(utils.GetClientIP(r), req.Action+"_instance", "instance", inst.ServiceName, "Failed: "+err.Error(), "fail")
+		response.Error(w, e.New(code.ActionFailed, fmt.Sprintf("指令下发失败: %v", err), err))
+		return
+	}
+
+	// 如果是 destroy，Worker 执行成功后一般不再上报状态，
+	// 这里可以先标记，等待 Worker 响应（异步架构下比较复杂），
+	// 或者直接在前端刷新时处理。
+	// 为了用户体验，我们假定指令发送成功后，稍后会删除。
+	// 如果是同步架构，这里会等待。WS 是异步的。
 	if req.Action == "destroy" {
+		// 乐观策略：稍后 Worker 会处理并可能清理文件
+		// Master 端可以先不删，等用户再次确认或通过回调删除
+		// 简单起见：这里直接删库，Worker 尽力而为
 		h.instMgr.RemoveInstance(req.InstanceID)
 		h.broadcastUpdate()
 	}
@@ -291,6 +288,7 @@ func (h *ServerHandler) InstanceAction(w http.ResponseWriter, r *http.Request) {
 
 // WorkerStatusReport Worker 状态上报回调
 // POST /api/instance/status_report
+// 注意：虽然架构切换到了 WS，保留此 HTTP 接口可用于兼容，或者作为 Worker->Gateway 转发后的内部处理逻辑
 func (h *ServerHandler) WorkerStatusReport(w http.ResponseWriter, r *http.Request) {
 	var report protocol.InstanceStatusReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
@@ -351,7 +349,6 @@ func (h *ServerHandler) SystemAction(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(target *protocol.InstanceInfo) {
 			defer wg.Done()
-			// sendInstanceCommand 内部会通过 ID 查找最新 IP
 			if err := h.sendInstanceCommand(target, req.Action); err != nil {
 				// 仅记录日志，不中断其他
 				mu.Lock()

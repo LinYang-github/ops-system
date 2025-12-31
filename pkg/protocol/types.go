@@ -124,7 +124,7 @@ type SystemInfo struct {
 type InstanceInfo struct {
 	ID             string `json:"id"`
 	SystemID       string `json:"system_id"`
-	NodeIP         string `json:"node_ip"`
+	NodeID         string `json:"node_id"`
 	ServiceName    string `json:"service_name"`
 	ServiceVersion string `json:"service_version"`
 

@@ -780,8 +780,7 @@ const deployInstance = async () => {
       service_name: deployDialog.targetModule.package_name,
       service_version: deployDialog.targetModule.package_version,
       // 如果是 'auto'，传给后端逻辑处理，否则传具体的 NodeID
-      node_id: deployDialog.nodeID === 'auto' ? '' : deployDialog.nodeID,
-      node_ip: deployDialog.nodeID === 'auto' ? 'auto' : '' // 兼容部分旧逻辑
+      node_id: deployDialog.nodeID === 'auto' ? '' : deployDialog.nodeID
     }
     
     await request.post('/api/deploy', payload)

@@ -61,7 +61,7 @@ func (h *ServerHandler) GetInstanceLogFiles(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 2. 获取节点 (使用 nodeMgr 获取 IP 和 Port)
-	node, exists := h.nodeMgr.GetNode(inst.NodeIP)
+	node, exists := h.nodeMgr.GetNode(inst.NodeID)
 	if !exists {
 		response.Error(w, e.New(code.NodeOffline, "节点离线或不存在", nil))
 		return
@@ -115,7 +115,7 @@ func (h *ServerHandler) InstanceLogStream(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	node, exists := h.nodeMgr.GetNode(inst.NodeIP)
+	node, exists := h.nodeMgr.GetNode(inst.NodeID)
 	if !exists {
 		http.Error(w, "Node offline", 404)
 		return

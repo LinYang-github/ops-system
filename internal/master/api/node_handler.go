@@ -1,13 +1,10 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"ops-system/internal/master/ws"
@@ -16,9 +13,13 @@ import (
 	"ops-system/pkg/protocol"
 	"ops-system/pkg/response"
 	"ops-system/pkg/utils"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
-// HandleHeartbeat 处理 Worker 心跳
+// HandleHeartbeat 处理 Worker 心跳 (HTTP 兼容接口)
+// 新版架构中，Worker 主要通过 WebSocket 上报心跳，此接口用于兼容或 fallback
 // POST /api/worker/heartbeat
 func (h *ServerHandler) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -36,15 +37,15 @@ func (h *ServerHandler) HandleHeartbeat(w http.ResponseWriter, r *http.Request) 
 	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
 		remoteIP = host
 	}
+	// 如果是本地回环且请求体带了IP，优先使用请求体的IP
 	if (remoteIP == "127.0.0.1" || remoteIP == "::1") && req.Info.IP != "" && req.Info.IP != "127.0.0.1" {
 		remoteIP = req.Info.IP
 	}
 
-	// 1. 更新数据库 (打印日志以便调试)
-	// 如果 nodeManager 内部有错误，它会打印到控制台
+	// 1. 更新数据库/缓存
 	h.nodeMgr.HandleHeartbeat(req, remoteIP)
 
-	// 2. 广播 (确保 ws 包导入正确)
+	// 2. 广播给前端
 	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
 	// 3. 获取动态配置
@@ -56,12 +57,11 @@ func (h *ServerHandler) HandleHeartbeat(w http.ResponseWriter, r *http.Request) 
 
 	// 4. 返回标准响应
 	resp := protocol.HeartbeatResponse{
-		Code:              200, // 这里的 Code 仅仅是 payload 里的一个字段，不是外层信封的 Code
+		Code:              200,
 		HeartbeatInterval: hbInterval,
 		MonitorInterval:   monInterval,
 	}
 
-	// 最终返回 JSON: { "code": 0, "msg": "success", "data": { "code": 200, "heartbeat_interval": 5... } }
 	response.Success(w, resp)
 }
 
@@ -100,19 +100,19 @@ func (h *ServerHandler) AddNode(w http.ResponseWriter, r *http.Request) {
 // POST /api/nodes/delete
 func (h *ServerHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID string `json:"id"`
+		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 		return
 	}
 
-	if err := h.nodeMgr.DeleteNode(req.ID); err != nil {
+	if err := h.nodeMgr.DeleteNode(req.IP); err != nil {
 		response.Error(w, e.New(code.DatabaseError, "删除节点失败", err))
 		return
 	}
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.ID, "", "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.IP, "", "success")
 	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
 	response.Success(w, nil)
@@ -163,11 +163,11 @@ func (h *ServerHandler) ResetNodeName(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, nil)
 }
 
-// TriggerCmd 下发 CMD 指令
+// TriggerCmd 下发 CMD 指令 (WebSocket 模式)
 // POST /api/ctrl/cmd
 func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 	type TriggerReq struct {
-		TargetID string `json:"target_id"`
+		TargetIP string `json:"target_ip"`
 		Command  string `json:"command"`
 	}
 
@@ -177,296 +177,125 @@ func (h *ServerHandler) TriggerCmd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, exists := h.nodeMgr.GetNode(trigger.TargetID)
-	if !exists {
+	// 1. 检查节点是否存在且在线
+	node, exists := h.nodeMgr.GetNode(trigger.TargetIP)
+	if !exists || node.Status != "online" {
 		response.Error(w, e.New(code.NodeNotFound, "节点不存在或离线", nil))
 		return
 	}
 
-	// 构造请求
+	// 2. 检查 WebSocket 连接状态 (通过 Gateway)
+	if !h.gateway.IsConnected(trigger.TargetIP) {
+		response.Error(w, e.New(code.NodeOffline, "节点 WebSocket 未连接，无法下发指令", nil))
+		return
+	}
+
+	// 3. 构造请求
 	workerReq := protocol.CommandRequest{Command: trigger.Command}
-	reqBody, _ := json.Marshal(workerReq)
 
-	// 拼接 URL: http://IP:Port/api/exec
-	targetURL := fmt.Sprintf("http://%s:%d/api/exec", node.IP, node.Port)
-
-	// 使用 HTTP Client 请求 Worker
-	client := &http.Client{Timeout: 10 * time.Second} // 执行命令可能稍慢
-	resp, err := client.Post(targetURL, "application/json", bytes.NewBuffer(reqBody))
+	// 4. 通过 WebSocket 网关发送
+	// 注意：此处改为异步下发，无法立即获取 Command 执行结果(stdout)
+	// 如果需要结果，需实现 Response 回调机制或查看日志
+	err := h.gateway.SendCommand(trigger.TargetIP, workerReq)
 	if err != nil {
-		h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetID, "Network Error", "fail")
-		response.Error(w, e.New(code.NodeExecFailed, fmt.Sprintf("连接Worker失败: %v", err), err))
-		return
-	}
-	defer resp.Body.Close()
-
-	// 解析 Worker 响应
-	var result map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		response.Error(w, e.New(code.NodeExecFailed, "解析Worker响应失败", err))
+		h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetIP, "Send Failed", "fail")
+		response.Error(w, e.New(code.NodeExecFailed, fmt.Sprintf("指令下发失败: %v", err), err))
 		return
 	}
 
-	// 记录日志
-	status := "success"
-	if result["error"] != "" {
-		status = "fail"
-	}
-	h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetID, trigger.Command, status)
+	// 5. 记录日志并响应
+	h.logMgr.RecordLog(utils.GetClientIP(r), "exec_cmd", "node", trigger.TargetIP, trigger.Command, "sent")
 
-	// 返回结果
+	// 返回异步成功标识
+	// 前端需要适配：不再直接显示 output，而是提示"指令已发送"
+	result := map[string]string{
+		"output": fmt.Sprintf("Command '%s' sent via WebSocket.\n(Output handling not yet implemented in async mode)", trigger.Command),
+		"status": "async_sent",
+	}
 	response.Success(w, result)
 }
 
-// CleanNodeCache 远程清理节点缓存
-// POST /api/nodes/clean_cache
-func (h *ServerHandler) CleanNodeCache(w http.ResponseWriter, r *http.Request) {
-	type CleanReq struct {
-		NodeID string `json:"node_id"`
-		Retain int    `json:"retain"`
-	}
-	var req CleanReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, e.New(code.InvalidJSON, "JSON error", err))
+// HandleNodeTerminal 代理节点终端
+// 注意：此功能目前仍依赖 Master -> Worker 的主动连接 (ws://nodeIP:port)
+// 在 NAT 环境下可能无法工作，需进一步改造为反向隧道
+// HandleNodeTerminal 代理节点终端 (反向隧道版)
+func (h *ServerHandler) HandleNodeTerminal(w http.ResponseWriter, r *http.Request) {
+	nodeIP := r.URL.Query().Get("ip")
+
+	// 1. 检查连接
+	if !h.gateway.IsConnected(nodeIP) {
+		http.Error(w, "Node offline", 404)
 		return
 	}
 
-	node, exists := h.nodeMgr.GetNode(req.NodeID)
-	if !exists {
-		response.Error(w, e.New(code.NodeNotFound, "Node offline", nil))
+	// 2. 生成会话 ID
+	sessionID := uuid.NewString()
+
+	// 3. 准备等待通道
+	workerConnCh := h.gateway.AwaitWorkerConnection(sessionID)
+
+	// 4. 发送指令给 Worker：请连回来！
+	// 获取 Master 自身地址 (用于 Worker 回连)
+	// 注意：生产环境应配置外部可访问地址，这里简单取 Host
+	masterAddr := r.Host
+	cmdPayload := map[string]string{
+		"action":     "start_terminal",
+		"session_id": sessionID,
+		"server":     masterAddr,
+	}
+
+	if err := h.gateway.SendCommand(nodeIP, cmdPayload); err != nil {
+		http.Error(w, "Failed to send command: "+err.Error(), 500)
 		return
 	}
 
-	// 转发请求给 Worker
-	targetURL := fmt.Sprintf("http://%s:%d/api/maintenance/cleanup_cache", node.IP, node.Port)
-	workerPayload := map[string]int{"retain": req.Retain}
-	payloadBytes, _ := json.Marshal(workerPayload)
-
-	respBody, err := utils.Post(targetURL, payloadBytes)
+	// 5. 升级前端 WebSocket
+	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		response.Error(w, e.New(code.NetworkError, "Call worker failed", err))
 		return
 	}
+	defer clientConn.Close()
 
-	// 透传 Worker 的响应
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(respBody)
-}
-
-// CleanAllNodesCache 清理所有在线节点的缓存
-// POST /api/maintenance/cleanup_all_cache
-func (h *ServerHandler) CleanAllNodesCache(w http.ResponseWriter, r *http.Request) {
-	// 1. 解析请求参数 (保留几个版本)
-	var req struct {
-		Retain int `json:"retain"`
-	}
-	// 允许不传 body，默认 retain=0 (全删)
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			response.Error(w, e.New(code.InvalidJSON, "JSON error", err))
+	// 6. 阻塞等待 Worker 连接 (最多等 10 秒，由 Gateway 控制)
+	var workerConn *websocket.Conn
+	select {
+	case conn := <-workerConnCh:
+		if conn == nil {
+			clientConn.WriteMessage(websocket.TextMessage, []byte("\r\nTimeout waiting for worker connection.\r\n"))
 			return
 		}
-	}
-
-	// 2. 获取所有在线节点
-	allNodes := h.nodeMgr.GetAllNodes()
-	var targetNodes []protocol.NodeInfo
-	for _, n := range allNodes {
-		if n.Status == "online" {
-			targetNodes = append(targetNodes, n)
-		}
-	}
-
-	if len(targetNodes) == 0 {
-		response.Success(w, map[string]interface{}{
-			"success_count": 0,
-			"total_freed":   0,
-			"msg":           "当前无在线节点",
-		})
+		workerConn = conn
+	case <-time.After(10 * time.Second):
+		clientConn.WriteMessage(websocket.TextMessage, []byte("\r\nWorker connect timeout.\r\n"))
 		return
 	}
+	defer workerConn.Close()
 
-	// 3. 并发调用 Worker
-	var wg sync.WaitGroup
-	var successCount int64
-	var failCount int64
-	var totalFreedBytes int64
+	// 7. 双向转发 (Pipe)
+	h.logMgr.RecordLog(utils.GetClientIP(r), "web_terminal", "node", nodeIP, "Session Start", "success")
 
-	// 构造发送给 Worker 的 payload
-	workerPayload := map[string]int{"retain": req.Retain}
-	payloadBytes, _ := json.Marshal(workerPayload)
-
-	// 限制并发数为 50，防止瞬间耗尽 Master 文件句柄或带宽
-	sem := make(chan struct{}, 50)
-
-	for _, node := range targetNodes {
-		wg.Add(1)
-		sem <- struct{}{} // 获取令牌
-
-		go func(n protocol.NodeInfo) {
-			defer wg.Done()
-			defer func() { <-sem }() // 释放令牌
-
-			targetURL := fmt.Sprintf("http://%s:%d/api/maintenance/cleanup_cache", n.IP, n.Port)
-
-			// 调用 Worker (复用 utils.Post 自动带 Token)
-			respBody, err := utils.Post(targetURL, payloadBytes)
+	errChan := make(chan error, 2)
+	go func() {
+		for {
+			mt, msg, err := workerConn.ReadMessage()
 			if err != nil {
-				atomic.AddInt64(&failCount, 1)
+				errChan <- err
 				return
 			}
-
-			// 解析 Worker 响应计算释放空间
-			// Worker 返回结构: { code:0, data: { freed_bytes: 1024 ... } }
-			var workerResp struct {
-				Code int `json:"code"`
-				Data struct {
-					FreedBytes int64 `json:"freed_bytes"`
-				} `json:"data"`
-			}
-
-			if json.Unmarshal(respBody, &workerResp) == nil && workerResp.Code == 0 {
-				atomic.AddInt64(&successCount, 1)
-				atomic.AddInt64(&totalFreedBytes, workerResp.Data.FreedBytes)
-			} else {
-				atomic.AddInt64(&failCount, 1)
-			}
-		}(node)
-	}
-
-	wg.Wait()
-
-	// 4. 记录操作日志
-	logDetail := fmt.Sprintf("Retain: %d, Success: %d, Fail: %d, Freed: %s",
-		req.Retain, successCount, failCount, utils.FormatBytes(totalFreedBytes))
-	h.logMgr.RecordLog(utils.GetClientIP(r), "clean_all_cache", "cluster", "all_nodes", logDetail, "success")
-
-	// 5. 返回汇总结果
-	response.Success(w, map[string]interface{}{
-		"success_count": successCount,
-		"fail_count":    failCount,
-		"total_nodes":   len(targetNodes),
-		"total_freed":   totalFreedBytes,
-	})
-}
-
-// ScanAllOrphans 扫描全网孤儿资源
-// POST /api/maintenance/scan_orphans
-func (h *ServerHandler) ScanAllOrphans(w http.ResponseWriter, r *http.Request) {
-	// 1. 获取全量白名单 (直接查 DB，不依赖视图层级)
-	// 只要 DB 里有，就算合法，不管是 Stopped 还是 Running
-	validSystems, err := h.sysMgr.GetAllSystemIDs()
-	if err != nil {
-		response.Error(w, e.New(code.DatabaseError, "Get system IDs failed", err))
-		return
-	}
-
-	validInstances, err := h.instMgr.GetAllInstanceIDs()
-	if err != nil {
-		response.Error(w, e.New(code.DatabaseError, "Get instances failed", err))
-		return
-	}
-
-	// 2. 构造 Worker 请求体
-	reqPayload := protocol.OrphanScanRequest{
-		ValidSystems:   validSystems,
-		ValidInstances: validInstances,
-	}
-	reqBytes, _ := json.Marshal(reqPayload)
-
-	// 3. 并发请求在线 Worker
-	nodes := h.nodeMgr.GetAllNodes()
-	type NodeResult struct {
-		NodeIP string                `json:"node_ip"`
-		Items  []protocol.OrphanItem `json:"items"`
-		Error  string                `json:"error"`
-	}
-
-	var results []NodeResult
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for _, node := range nodes {
-		if node.Status != "online" {
-			continue
+			clientConn.WriteMessage(mt, msg)
 		}
-
-		wg.Add(1)
-		go func(n protocol.NodeInfo) {
-			defer wg.Done()
-
-			targetURL := fmt.Sprintf("http://%s:%d/api/maintenance/scan_orphans", n.IP, n.Port)
-			body, err := utils.Post(targetURL, reqBytes)
-
-			res := NodeResult{NodeIP: n.IP, Items: []protocol.OrphanItem{}}
-
+	}()
+	go func() {
+		for {
+			mt, msg, err := clientConn.ReadMessage()
 			if err != nil {
-				res.Error = err.Error()
-			} else {
-				var workerResp protocol.OrphanScanResponse
-				if json.Unmarshal(body, &workerResp) == nil {
-					res.Items = workerResp.Items
-				} else {
-					res.Error = "Parse error"
-				}
+				errChan <- err
+				return
 			}
-
-			mu.Lock()
-			results = append(results, res)
-			mu.Unlock()
-		}(node)
-	}
-	wg.Wait()
-
-	response.Success(w, results)
-}
-
-// DeleteOrphans 确认删除
-// POST /api/maintenance/delete_orphans
-// Body: { "targets": [ { "node_ip": "...", "paths": ["..."] } ] }
-func (h *ServerHandler) DeleteOrphans(w http.ResponseWriter, r *http.Request) {
-	type Target struct {
-		NodeIP string   `json:"node_ip"`
-		Paths  []string `json:"paths"`
-	}
-	var req struct {
-		Targets []Target `json:"targets"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, e.New(code.InvalidJSON, "JSON error", err))
-		return
-	}
-
-	var successCount int64
-	var wg sync.WaitGroup
-
-	for _, t := range req.Targets {
-		if len(t.Paths) == 0 {
-			continue
+			workerConn.WriteMessage(mt, msg)
 		}
+	}()
 
-		node, exists := h.nodeMgr.GetNode(t.NodeIP)
-		if !exists {
-			continue
-		}
-
-		wg.Add(1)
-		go func(n *protocol.NodeInfo, paths []string) {
-			defer wg.Done()
-			url := fmt.Sprintf("http://%s:%d/api/maintenance/delete_orphans", n.IP, n.Port)
-			p := protocol.OrphanDeleteRequest{Items: paths}
-			b, _ := json.Marshal(p)
-
-			resp, err := utils.Post(url, b)
-			if err == nil {
-				var res map[string]int
-				json.Unmarshal(resp, &res)
-				atomic.AddInt64(&successCount, int64(res["deleted_count"]))
-			}
-		}(node, t.Paths)
-	}
-	wg.Wait()
-
-	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_orphans", "cluster", "gc", fmt.Sprintf("Deleted %d items", successCount), "success")
-	response.Success(w, map[string]int64{"success_count": successCount})
+	<-errChan
+	h.logMgr.RecordLog(utils.GetClientIP(r), "web_terminal", "node", nodeIP, "Session End", "success")
 }

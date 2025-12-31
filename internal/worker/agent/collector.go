@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"time"
 
+	"ops-system/internal/worker/utils"
 	"ops-system/pkg/protocol"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -25,6 +26,7 @@ var (
 // GetNodeInfo 采集节点静态信息
 func GetNodeInfo() protocol.NodeInfo {
 	info := protocol.NodeInfo{
+		ID:   utils.GetNodeID(),
 		OS:   runtime.GOOS,
 		Arch: runtime.GOARCH,
 	}

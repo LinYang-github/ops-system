@@ -6,21 +6,19 @@ import (
 	"os"
 	"path/filepath"
 
-	"ops-system/internal/worker/agent"
 	"ops-system/internal/worker/executor"
 	"ops-system/internal/worker/handler"
-
-	// 使用别名解决冲突
-	"ops-system/internal/worker/utils" // 本地工具 (自启)
+	"ops-system/internal/worker/transport" // [新增] 引入 Transport
+	"ops-system/internal/worker/utils"
 	"ops-system/pkg/config"
-	pkgUtils "ops-system/pkg/utils" // 公共工具 (HTTP Client)
+	pkgUtils "ops-system/pkg/utils"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
 func main() {
-	// 1. 获取当前执行文件的绝对路径
+	// 1. 基础路径与参数处理
 	ex, err := os.Executable()
 	if err != nil {
 		log.Fatal(err)
@@ -28,9 +26,7 @@ func main() {
 	exPath := filepath.Dir(ex)
 	defaultWorkDir := filepath.Join(exPath, "instances")
 
-	// 2. 命令行参数定义
-	cfgFile := pflag.StringP("config", "c", "", "Config file path (default: ./worker.yaml)")
-
+	cfgFile := pflag.StringP("config", "c", "", "Config file path")
 	pflag.Int("port", 8081, "Worker listening port")
 	viper.BindPFlag("server.port", pflag.Lookup("port"))
 
@@ -40,16 +36,13 @@ func main() {
 	pflag.String("work_dir", defaultWorkDir, "Instances directory")
 	viper.BindPFlag("server.work_dir", pflag.Lookup("work_dir"))
 
-	// [新增] 允许通过命令行覆盖 Secret Key
 	pflag.String("secret", "ops-system-secret-key", "Auth Secret Key")
 	viper.BindPFlag("auth.secret_key", pflag.Lookup("secret"))
 
-	// 自启参数独立处理
-	autoStart := pflag.Int("autostart", -1, "Auto start setting: 1=enable, 0=disable")
-
+	autoStart := pflag.Int("autostart", -1, "Auto start setting")
 	pflag.Parse()
 
-	// 3. 加载配置
+	// 2. 加载配置
 	cfg, err := config.LoadWorkerConfig(*cfgFile)
 	if err != nil {
 		log.Fatalf("Load config failed: %v", err)
@@ -60,41 +53,44 @@ func main() {
 		log.Fatalf("Invalid work dir: %v", err)
 	}
 
-	// 4. 处理开机自启
+	// 3. 处理自启
 	if *autoStart != -1 {
 		enable := *autoStart == 1
-		// 注意：自启写入的参数也需要包含 secret，否则自启后鉴权失败
-		// 这里 HandleAutoStart 可能需要修改以支持 secret 参数，或者暂且忽略（使用默认值）
 		if err := utils.HandleAutoStart(enable, cfg.Connect.MasterURL, cfg.Server.Port, absWorkDir); err != nil {
 			log.Fatalf("配置自启失败: %v", err)
 		}
 		return
 	}
 
-	// 5. 初始化全局 HTTP Client
-	// 【关键修复】传入配置中的 SecretKey
-	log.Printf("Initializing HTTP Client with SecretKey: %s...", maskSecret(cfg.Auth.SecretKey))
-	pkgUtils.InitHTTPClient(cfg.Logic.HTTPClientTimeout, cfg.Auth.SecretKey)
+	// 【新增】初始化节点唯一 ID
+	nodeID, err := utils.InitNodeID(absWorkDir)
+	if err != nil {
+		log.Fatalf("Failed to generate NodeID: %v", err)
+	}
+	log.Printf("🔹 Worker Identity: %s", nodeID)
 
-	// 6. 初始化业务模块
+	// 4. 初始化
+	pkgUtils.InitHTTPClient(cfg.Logic.HTTPClientTimeout, cfg.Auth.SecretKey)
 	executor.Init(absWorkDir, cfg.LogRotate)
 	handler.InitHandler(cfg.Connect.MasterURL)
 
-	listenAddr := fmt.Sprintf(":%d", cfg.Server.Port)
-
 	log.Printf("Worker started.")
-	log.Printf(" > Listen:   %s", listenAddr)
+	log.Printf(" > Listen:   :%d", cfg.Server.Port)
 	log.Printf(" > Master:   %s", cfg.Connect.MasterURL)
 	log.Printf(" > Work Dir: %s", absWorkDir)
-	log.Printf(" > Interval: Heartbeat=%v, Monitor=%v", cfg.Logic.HeartbeatInterval, cfg.Logic.MonitorInterval)
 
+	// 5. [核心变更] 启动 WebSocket Client (替代旧的 agent.StartHeartbeat)
+	// 这会建立长连接，并在连接成功后自动发送 Register/Heartbeat 包
+	transport.StartClient(cfg.Connect.MasterURL, cfg.Auth.SecretKey)
+
+	// 6. 启动本地监控采集 (依然需要，用于定期上报状态)
+	// 注意：Monitor 内部现在是通过 transport 还是 http 上报取决于 executor 的实现
+	// 建议暂时保留 executor 的独立监控逻辑，或者后续将其合并到 transport 中
 	executor.StartMonitor(cfg.Connect.MasterURL, cfg.Logic.MonitorInterval)
 
-	// 启动 Server
-	go handler.StartWorkerServer(listenAddr)
-
-	// 启动心跳
-	agent.StartHeartbeat(cfg.Connect.MasterURL, cfg.Server.Port, absWorkDir, cfg.Logic.HeartbeatInterval)
+	// 7. 启动 Worker 自身的 HTTP 服务 (用于日志查看、本地调试等)
+	// 注意：现在指令通过 WS 下发，但 Log Stream 可能还依赖 HTTP
+	handler.StartWorkerServer(fmt.Sprintf(":%d", cfg.Server.Port))
 }
 
 func maskSecret(s string) string {

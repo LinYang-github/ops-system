@@ -31,8 +31,8 @@ func NewInstanceManager(db *sql.DB) *InstanceManager {
 func (im *InstanceManager) RegisterInstance(inst *protocol.InstanceInfo) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
-	query := `INSERT OR REPLACE INTO instance_infos (id, system_id, node_ip, service_name, service_version, status, pid, uptime) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	im.db.Exec(query, inst.ID, inst.SystemID, inst.NodeIP, inst.ServiceName, inst.ServiceVersion, inst.Status, inst.PID, inst.Uptime)
+	query := `INSERT OR REPLACE INTO instance_infos (id, system_id, node_id, service_name, service_version, status, pid, uptime) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	im.db.Exec(query, inst.ID, inst.SystemID, inst.NodeID, inst.ServiceName, inst.ServiceVersion, inst.Status, inst.PID, inst.Uptime)
 }
 
 // UpdateInstanceStatus 简单更新状态
@@ -81,8 +81,8 @@ func (im *InstanceManager) RemoveInstance(id string) {
 // GetInstance 获取单个实例
 func (im *InstanceManager) GetInstance(id string) (*protocol.InstanceInfo, bool) {
 	var inst protocol.InstanceInfo
-	err := im.db.QueryRow(`SELECT id, system_id, node_ip, service_name, service_version, status, pid, uptime FROM instance_infos WHERE id = ?`, id).
-		Scan(&inst.ID, &inst.SystemID, &inst.NodeIP, &inst.ServiceName, &inst.ServiceVersion, &inst.Status, &inst.PID, &inst.Uptime)
+	err := im.db.QueryRow(`SELECT id, system_id, node_id, service_name, service_version, status, pid, uptime FROM instance_infos WHERE id = ?`, id).
+		Scan(&inst.ID, &inst.SystemID, &inst.NodeID, &inst.ServiceName, &inst.ServiceVersion, &inst.Status, &inst.PID, &inst.Uptime)
 	if err != nil {
 		return nil, false
 	}
@@ -110,7 +110,7 @@ func (im *InstanceManager) GetSystemInstances(systemID string) ([]protocol.Insta
 	var instances []protocol.InstanceInfo
 	for rows.Next() {
 		var i protocol.InstanceInfo
-		rows.Scan(&i.ID, &i.SystemID, &i.NodeIP, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
+		rows.Scan(&i.ID, &i.SystemID, &i.NodeID, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
 
 		if val, ok := im.metricsCache.Load(i.ID); ok {
 			m := val.(realTimeMetrics)
@@ -132,7 +132,7 @@ func (im *InstanceManager) GetAllInstances() map[string][]*protocol.InstanceInfo
 	instMap := make(map[string][]*protocol.InstanceInfo)
 	for instRows.Next() {
 		var i protocol.InstanceInfo
-		instRows.Scan(&i.ID, &i.SystemID, &i.NodeIP, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
+		instRows.Scan(&i.ID, &i.SystemID, &i.NodeID, &i.ServiceName, &i.ServiceVersion, &i.Status, &i.PID, &i.Uptime)
 
 		if val, ok := im.metricsCache.Load(i.ID); ok {
 			m := val.(realTimeMetrics)
