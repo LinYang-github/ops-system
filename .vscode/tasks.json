@@ -173,7 +173,7 @@
         {
             "label": "5.0 [Test] Mock Cluster",
             "type": "shell",
-            "command": "go run ./cmd/test/tools/mock_cluster/main.go -count 200 -duration 60s",
+            "command": "go run ./cmd/tests/tools/mock_cluster/main.go -count 200 -duration 60s",
             "group": "test",
             "detail": "启动 200 个模拟节点进行压力测试"
         },

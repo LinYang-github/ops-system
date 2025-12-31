@@ -1,17 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"math/rand"
-	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -20,18 +17,21 @@ import (
 	"time"
 
 	"ops-system/pkg/protocol"
+
+	"github.com/gorilla/websocket"
 )
 
 // ==========================================
 // 配置参数
 // ==========================================
 var (
-	masterURL   = flag.String("master", "http://127.0.0.1:8080", "Master 服务的地址")
-	nodeCount   = flag.Int("count", 200, "模拟节点数量")
-	duration    = flag.Duration("duration", 5*time.Minute, "测试持续时间")
-	interval    = flag.Duration("interval", 5*time.Second, "初始心跳间隔")
-	packetLoss  = flag.Int("loss", 0, "模拟丢包率 (0-100%)")
-	maxJitterMs = flag.Int("jitter", 0, "模拟网络抖动最大延迟 (ms)")
+	masterURL  = flag.String("master", "http://127.0.0.1:8080", "Master 服务地址 (http://...)")
+	nodeCount  = flag.Int("count", 200, "模拟节点数量")
+	duration   = flag.Duration("duration", 5*time.Minute, "测试持续时间")
+	interval   = flag.Duration("interval", 5*time.Second, "心跳间隔")
+	packetLoss = flag.Int("loss", 0, "模拟丢包率 (0-100%) - 仅跳过发送，不断连")
+	secret     = flag.String("secret", "ops-system-secret-key", "认证 Token")
+	startRate  = flag.Int("rate", 50, "启动速率 (每秒启动多少个连接)")
 )
 
 // ==========================================
@@ -39,57 +39,40 @@ var (
 // ==========================================
 var (
 	stats struct {
-		Requests    int64
-		Success     int64
-		Fail        int64
-		TotalLat    int64 // 总延迟 (微秒)
-		ActiveNodes int64 // 当前在线模拟节点
+		SentBytes   int64 // 发送字节数
+		RecvBytes   int64 // 接收字节数 (Master 下发的配置/指令)
+		SentCount   int64 // 发送消息数 (心跳)
+		ConnectFail int64 // 连接失败数
+		Disconnect  int64 // 断开连接数
+		ActiveConns int64 // 当前在线连接数
 	}
 	startTime = time.Now()
 )
 
-// 全局 HTTP Client (复用连接，避免客户端端口耗尽)
-var httpClient *http.Client
-
-func init() {
-	// 优化 HTTP Client 设置，模拟高并发场景
-	httpClient = &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:        1000,
-			MaxIdleConnsPerHost: 1000,
-			IdleConnTimeout:     90 * time.Second,
-			DisableKeepAlives:   false,
-			DialContext: (&net.Dialer{
-				Timeout:   2 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-		},
-	}
-}
-
 func main() {
 	flag.Parse()
-
 	printBanner()
 
-	// 信号处理 (优雅退出)
+	// 1. URL 转换 http -> ws
+	wsURL := convertToWS(*masterURL)
+	log.Printf("🎯 目标 Master WS: %s", wsURL)
+
+	// 2. 信号处理
 	ctx, cancel := context.WithTimeout(context.Background(), *duration)
 	defer cancel()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 启动统计监控协程
+	// 3. 启动监控面板
 	go monitorStats(ctx)
 
-	// 启动模拟节点
+	// 4. 启动模拟节点 (流控启动)
 	var wg sync.WaitGroup
-	log.Printf("🚀 正在启动 %d 个模拟节点...", *nodeCount)
-	log.Printf("🎯 目标 Master: %s", *masterURL)
+	ticker := time.NewTicker(time.Second / time.Duration(*startRate))
 
-	// 限制并发启动速度，避免瞬间把 Master 甚至本机打死
-	startTicker := time.NewTicker(10 * time.Millisecond)
+	log.Printf("🚀 正在启动 %d 个模拟节点 (速率: %d/s)...", *nodeCount, *startRate)
+
 	for i := 0; i < *nodeCount; i++ {
 		select {
 		case <-ctx.Done():
@@ -97,22 +80,21 @@ func main() {
 		case <-sigChan:
 			cancel()
 			goto CLEANUP
-		case <-startTicker.C:
+		case <-ticker.C:
 			wg.Add(1)
-			// 生成确定性的 IP，方便多次测试对比
-			// 10.x.x.x
+			// 生成确定性 IP
 			mockIP := fmt.Sprintf("10.%d.%d.%d", (i/65536)%255, (i/256)%255, i%255+1)
-			mockName := fmt.Sprintf("load-test-worker-%04d", i)
+			mockName := fmt.Sprintf("stress-worker-%04d", i)
 
-			go func(ip, name string, offset int) {
+			go func(ip, name string, idx int) {
 				defer wg.Done()
-				runMockWorker(ctx, ip, name, offset)
+				runMockWebSocketWorker(ctx, wsURL, ip, name, idx)
 			}(mockIP, mockName, i)
 		}
 	}
-	startTicker.Stop()
+	ticker.Stop()
 
-	// 等待结束信号
+	// 5. 等待结束
 	select {
 	case <-ctx.Done():
 		log.Println("\n⏱️ 测试时间结束")
@@ -122,218 +104,193 @@ func main() {
 	}
 
 CLEANUP:
-	log.Println("正在等待所有协程退出...")
+	log.Println("正在等待所有连接关闭...")
 	wg.Wait()
 	printFinalReport()
 }
 
 // ==========================================
-// 模拟 Worker 逻辑
+// 模拟 Worker (WebSocket 版本)
 // ==========================================
 
-func runMockWorker(ctx context.Context, ip, name string, offset int) {
-	atomic.AddInt64(&stats.ActiveNodes, 1)
-	defer atomic.AddInt64(&stats.ActiveNodes, -1)
+func runMockWebSocketWorker(ctx context.Context, wsURL, ip, name string, offset int) {
+	// 1. 建立连接
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+*secret)
 
-	// 1. 初始化静态信息
-	info := protocol.NodeInfo{
-		IP:        ip,
-		Port:      8081, // 模拟端口
-		Hostname:  name,
-		Name:      name,
-		OS:        "linux",
-		Arch:      "amd64",
-		CPUCores:  8,
-		MemTotal:  32 * 1024, // 32GB
-		DiskTotal: 500 * 1024 * 1024 * 1024,
-		MacAddr:   fmt.Sprintf("52:54:00:%02x:%02x:%02x", rand.Intn(255), rand.Intn(255), rand.Intn(255)),
+	// 为了模拟真实网络，每个连接使用新的 Dialer
+	dialer := websocket.DefaultDialer
+	dialer.HandshakeTimeout = 5 * time.Second
+
+	conn, _, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		atomic.AddInt64(&stats.ConnectFail, 1)
+		// 连接失败直接退出，或者可以实现重连逻辑 (这里简单处理为退出)
+		return
+	}
+	defer conn.Close()
+
+	atomic.AddInt64(&stats.ActiveConns, 1)
+	defer atomic.AddInt64(&stats.ActiveConns, -1)
+	defer atomic.AddInt64(&stats.Disconnect, 1)
+
+	// 2. 发送注册包 (TypeRegister)
+	if err := sendPacket(conn, protocol.TypeRegister, ip, name, offset); err != nil {
+		return
 	}
 
-	// 初始间隔
-	currentInterval := *interval
-	ticker := time.NewTicker(currentInterval)
-	defer ticker.Stop()
+	// 3. 启动读协程 (必须读取，否则缓冲区满会导致断开，同时也为了处理 Master 的 Ping)
+	go func() {
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			atomic.AddInt64(&stats.RecvBytes, int64(len(msg)))
+		}
+	}()
 
-	// 模拟负载的正弦波相位偏移，让不同节点的波峰错开
-	phaseShift := float64(offset) * 0.1
+	// 4. 心跳循环
+	ticker := time.NewTicker(*interval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			// 发送关闭帧
+			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			return
 		case <-ticker.C:
-			// 2. 模拟丢包
+			// 模拟丢包
 			if *packetLoss > 0 && rand.Intn(100) < *packetLoss {
-				continue // 跳过本次心跳
+				continue
 			}
 
-			// 3. 模拟网络抖动 (Sleep)
-			if *maxJitterMs > 0 {
-				jitter := time.Duration(rand.Intn(*maxJitterMs)) * time.Millisecond
-				time.Sleep(jitter)
-			}
-
-			// 4. 生成动态 Metrics (正弦波 + 随机噪点)
-			now := float64(time.Now().Unix())
-			// CPU: 基础值 20% + 波动幅度 30% * sin(t) + 随机噪点
-			cpuLoad := 20.0 + 30.0*math.Sin(now/60.0+phaseShift) + rand.Float64()*10
-			if cpuLoad < 0 {
-				cpuLoad = 0
-			}
-			if cpuLoad > 100 {
-				cpuLoad = 100
-			}
-
-			// Mem: 类似，但周期更长
-			memLoad := 40.0 + 20.0*math.Sin(now/300.0+phaseShift) + rand.Float64()*5
-
-			status := protocol.NodeStatus{
-				CPUUsage:    cpuLoad,
-				MemUsage:    memLoad,
-				DiskUsage:   50.0,
-				NetInSpeed:  rand.Float64() * 1024, // 1MB/s range
-				NetOutSpeed: rand.Float64() * 2048,
-				Uptime:      uint64(time.Since(startTime).Seconds()),
-				Time:        time.Now().Unix(),
-			}
-
-			reqData := protocol.RegisterRequest{
-				Port:   8081,
-				Info:   info,
-				Status: status,
-			}
-
-			// 5. 发送请求
-			start := time.Now()
-			newInterval, err := sendHeartbeat(reqData)
-			latency := time.Since(start).Microseconds()
-
-			// 6. 更新统计
-			atomic.AddInt64(&stats.Requests, 1)
-			atomic.AddInt64(&stats.TotalLat, latency)
-			if err != nil {
-				atomic.AddInt64(&stats.Fail, 1)
-				// 简单的错误日志限流
-				if rand.Float32() < 0.01 {
-					log.Printf("Worker %s heartbeat error: %v", name, err)
-				}
-			} else {
-				atomic.AddInt64(&stats.Success, 1)
-
-				// 7. 处理 Master 下发的动态配置
-				// 如果 Master 要求改变心跳频率，这里模拟 Worker 的调整行为
-				if newInterval > 0 && newInterval != int64(currentInterval.Seconds()) {
-					currentInterval = time.Duration(newInterval) * time.Second
-					ticker.Reset(currentInterval)
-				}
+			// 发送心跳包
+			if err := sendPacket(conn, protocol.TypeHeartbeat, ip, name, offset); err != nil {
+				return // 发送失败视为断开
 			}
 		}
 	}
 }
 
-// sendHeartbeat 发送心跳并返回 Master 要求的新间隔
-func sendHeartbeat(data protocol.RegisterRequest) (int64, error) {
-	payload, _ := json.Marshal(data)
+// 构造并发送数据包
+func sendPacket(conn *websocket.Conn, msgType, ip, name string, offset int) error {
+	// 模拟负载波动
+	now := float64(time.Now().Unix())
+	phaseShift := float64(offset) * 0.1
+	cpuLoad := 20.0 + 30.0*math.Sin(now/60.0+phaseShift) + rand.Float64()*10
+	memLoad := 40.0 + 20.0*math.Sin(now/300.0+phaseShift) + rand.Float64()*5
 
-	req, _ := http.NewRequest("POST", *masterURL+"/api/worker/heartbeat", bytes.NewBuffer(payload))
-	req.Header.Set("Content-Type", "application/json")
-	// 模拟鉴权
-	req.Header.Set("Authorization", "Bearer ops-system-secret-key")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	// 读取响应以复用连接
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 {
-		return 0, fmt.Errorf("status code %d", resp.StatusCode)
-	}
-
-	// 解析响应中的动态配置
-	var result struct {
-		Code int `json:"code"`
-		Data struct {
-			HeartbeatInterval int64 `json:"heartbeat_interval"`
-		} `json:"data"`
+	// 构造 Paylaod
+	info := protocol.NodeInfo{
+		ID:        fmt.Sprintf("node-id-%s", name), // 确定的 NodeID
+		IP:        ip,
+		Port:      8081,
+		Hostname:  name,
+		Name:      name,
+		OS:        "linux",
+		Arch:      "amd64",
+		CPUCores:  8,
+		MemTotal:  32768,
+		DiskTotal: 1024 * 1024 * 1024 * 500,
+		Status:    "online",
 	}
 
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, nil // 解析失败忽略，不当做心跳失败
+	status := protocol.NodeStatus{
+		CPUUsage:    cpuLoad,
+		MemUsage:    memLoad,
+		DiskUsage:   50.0,
+		NetInSpeed:  rand.Float64() * 1000,
+		NetOutSpeed: rand.Float64() * 2000,
+		Uptime:      uint64(time.Since(startTime).Seconds()),
+		Time:        time.Now().Unix(),
 	}
 
-	return result.Data.HeartbeatInterval, nil
+	req := protocol.RegisterRequest{
+		Port:   8081,
+		Info:   info,
+		Status: status,
+	}
+
+	// 封装 WS 协议
+	wsMsg, _ := protocol.NewWSMessage(msgType, "", req)
+
+	// 写入
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	err := conn.WriteJSON(wsMsg)
+	if err == nil {
+		atomic.AddInt64(&stats.SentCount, 1)
+		atomic.AddInt64(&stats.SentBytes, int64(len(wsMsg.Payload))) // 近似值
+	}
+	return err
 }
 
 // ==========================================
 // 辅助函数
 // ==========================================
 
+func convertToWS(rawURL string) string {
+	u, _ := url.Parse(rawURL)
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	// 注意路径必须匹配 Master 路由
+	u.Path = "/api/worker/ws"
+	return u.String()
+}
+
 func monitorStats(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	var lastReqs int64 = 0
+	var lastSent int64 = 0
 
-	fmt.Println("\n📊 实时监控数据 (Press Ctrl+C to stop)")
-	fmt.Printf("%-10s | %-10s | %-8s | %-8s | %-8s\n", "Nodes", "QPS", "Succ", "Fail", "AvgLat")
-	fmt.Println("----------------------------------------------------------")
+	fmt.Println("\n📊 实时监控 (WebSocket Mode)")
+	fmt.Printf("%-8s | %-8s | %-10s | %-10s | %-8s\n", "Active", "ConFail", "Msgs/s", "MB Sent", "MB Recv")
+	fmt.Println("---------------------------------------------------------------")
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			currReqs := atomic.LoadInt64(&stats.Requests)
-			currSucc := atomic.LoadInt64(&stats.Success)
-			currFail := atomic.LoadInt64(&stats.Fail)
-			currLatTotal := atomic.LoadInt64(&stats.TotalLat)
-			active := atomic.LoadInt64(&stats.ActiveNodes)
+			active := atomic.LoadInt64(&stats.ActiveConns)
+			fail := atomic.LoadInt64(&stats.ConnectFail)
+			currSent := atomic.LoadInt64(&stats.SentCount)
+			bytesSent := atomic.LoadInt64(&stats.SentBytes)
+			bytesRecv := atomic.LoadInt64(&stats.RecvBytes)
 
-			qps := currReqs - lastReqs
-			avgLat := 0.0
-			if qps > 0 {
-				// 计算这1秒内的平均延迟 (这只是一个近似值，更精确的需要用直方图)
-				// 注意：TotalLat 是累积值，这里计算会有偏差，为了简单展示暂且如此
-				// 更好的做法是 reset atomic counter，但有并发问题。
-				// 作为一个简单 Mock 工具，我们直接算整体平均值
-				if currReqs > 0 {
-					avgLat = float64(currLatTotal) / float64(currReqs) / 1000.0 // ms
-				}
-			}
+			qps := currSent - lastSent
+			mbSent := float64(bytesSent) / 1024 / 1024
+			mbRecv := float64(bytesRecv) / 1024 / 1024
 
-			fmt.Printf("\r%-10d | %-10d | %-8d | %-8d | %-8.2f ms",
-				active, qps, currSucc, currFail, avgLat)
+			fmt.Printf("\r%-8d | %-8d | %-10d | %-10.2f | %-8.2f",
+				active, fail, qps, mbSent, mbRecv)
 
-			lastReqs = currReqs
+			lastSent = currSent
 		}
 	}
 }
 
 func printBanner() {
 	fmt.Println(`
-   ___  ___  ___  _____   __  ___  ___  _____  __ 
-  / _ \/ _ \/ _ \/ __/ | / / / _ \/ _ \/ __/ |/ /
- / // / // / // /\ \ | |/ / / // / ___/\ \/    / 
-/____/____/\___/___/ |___/ /____/_/  /___/_/|_|  
-                                                 
->> GDOS Mock Cluster Load Tester
+   __  __  ___   ___ _  __   ___ _    _   _ ___ _____ ___ ___ 
+  |  \/  |/ _ \ / __| |/ /  / __| |  | | | / __|_   _| __| _ \
+  | |\/| | (_) | (__| ' <  | (__| |__| |_| \__ \ | | | _||   /
+  |_|  |_|\___/ \___|_|\_\  \___|____|\___/|___/ |_| |___|_|_\
+                                                              
+  >> GDOS Mock Cluster (WebSocket Edition)
 	`)
 }
 
 func printFinalReport() {
-	durationSec := time.Since(startTime).Seconds()
-	total := atomic.LoadInt64(&stats.Requests)
-
-	fmt.Println("\n\n📋 测试报告 summary")
+	fmt.Println("\n\n📋 测试报告")
 	fmt.Println("========================================")
-	fmt.Printf("总耗时:      %.2f s\n", durationSec)
-	fmt.Printf("总请求数:    %d\n", total)
-	fmt.Printf("成功请求:    %d\n", atomic.LoadInt64(&stats.Success))
-	fmt.Printf("失败请求:    %d\n", atomic.LoadInt64(&stats.Fail))
-	fmt.Printf("平均 QPS:    %.2f\n", float64(total)/durationSec)
+	fmt.Printf("总发送消息:  %d\n", atomic.LoadInt64(&stats.SentCount))
+	fmt.Printf("连接失败数:  %d\n", atomic.LoadInt64(&stats.ConnectFail))
+	fmt.Printf("异常断开数:  %d\n", atomic.LoadInt64(&stats.Disconnect))
 	fmt.Println("========================================")
 }
