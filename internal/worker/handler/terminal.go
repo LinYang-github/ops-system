@@ -20,8 +20,8 @@ type TerminalMessage struct {
 }
 
 // HandleTerminal 处理终端 WebSocket
-// [新增] HTTP 包装函数 (供 server.go 调用)
-func HandleTerminal(w http.ResponseWriter, r *http.Request) {
+// HTTP 包装函数 (供 server.go 调用)
+func (h *WorkerHandler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Terminal upgrade failed: %v", err)
@@ -32,6 +32,7 @@ func HandleTerminal(w http.ResponseWriter, r *http.Request) {
 }
 
 // ServeTerminal 直接处理 WebSocket 连接 (供 Tunnel 调用)
+// 终端逻辑目前不依赖 executor 的状态 (只依赖无状态的 StartTerminal)，所以暂时不需要传 Manager
 func ServeTerminal(conn *websocket.Conn) {
 	defer conn.Close() // 确保退出时关闭
 
@@ -48,7 +49,7 @@ func ServeTerminal(conn *websocket.Conn) {
 	cmd := exec.Command(shell, args...)
 	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
 
-	// 2. 启动 PTY
+	// 2. 启动 PTY (executor.StartTerminal 是无状态函数)
 	tty, err := executor.StartTerminal(cmd)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error starting shell: "+err.Error()))

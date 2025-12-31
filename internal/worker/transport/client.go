@@ -6,9 +6,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"runtime"
-	"strings"
 	"time"
 
 	"ops-system/internal/worker/agent"
@@ -19,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// GlobalClient 全局实例 (仅供 main.go 初始化或调试使用，内部逻辑不依赖它)
 var GlobalClient *WorkerClient
 
 type WorkerClient struct {
@@ -27,48 +25,52 @@ type WorkerClient struct {
 	Conn             *websocket.Conn
 	SendChan         chan *protocol.WSMessage
 	updateTickerChan chan time.Duration
+
+	// [核心] 依赖注入 Executor Manager
+	execMgr *executor.Manager
 }
 
-func StartClient(masterURL, secret string) {
+// StartClient 启动 WebSocket 客户端
+// 必须传入 executor.Manager 实例
+func StartClient(masterURL, secret string, execMgr *executor.Manager) *WorkerClient {
 	client := &WorkerClient{
 		MasterURL:        masterURL,
 		Secret:           secret,
 		SendChan:         make(chan *protocol.WSMessage, 64),
-		updateTickerChan: make(chan time.Duration, 1), // 缓冲1
+		updateTickerChan: make(chan time.Duration, 1),
+		execMgr:          execMgr,
 	}
-	GlobalClient = client // [新增] 赋值给全局变量
+
+	GlobalClient = client // 赋值给全局变量以兼容部分遗留逻辑(可选)
+
 	go client.connectLoop()
+	return client
 }
 
 func (c *WorkerClient) connectLoop() {
 	for {
 		// 1. 构造 WebSocket URL
-		// 使用 net/url 进行规范化处理，避免字符串拼接错误
 		u, err := url.Parse(c.MasterURL)
 		if err != nil {
 			log.Printf("❌ Fatal: Invalid Master URL config: %v", err)
-			return // 配置错误，直接退出或等待
+			return
 		}
 
-		// 修正 Scheme (http -> ws, https -> wss)
 		switch u.Scheme {
 		case "https":
 			u.Scheme = "wss"
 		case "http":
 			u.Scheme = "ws"
 		default:
-			// 如果没写 scheme (如 "127.0.0.1:8080")，默认走 ws
 			u.Scheme = "ws"
 		}
 
-		// 安全拼接路径
 		u.Path = "/api/worker/ws"
 		wsURL := u.String()
 
 		header := http.Header{}
 		header.Set("Authorization", "Bearer "+c.Secret)
 
-		// 增加拨号超时
 		dialer := websocket.DefaultDialer
 		dialer.HandshakeTimeout = 5 * time.Second
 
@@ -79,24 +81,24 @@ func (c *WorkerClient) connectLoop() {
 			continue
 		}
 
-		// [关键修复] 为当前连接创建一个生命周期控制通道
+		// 创建生命周期控制通道
 		stopChan := make(chan struct{})
 
 		c.Conn = conn
 		log.Printf("✅ WebSocket Connected!")
 
-		// [修改] 连接成功后，发送注册包 (TypeRegister)
+		// 连接成功后发送注册包
 		c.sendPacket(protocol.TypeRegister)
 
-		// [关键修复] 启动子协程时传入 stopChan 和 conn 副本
-		// 这样即使 c.Conn 变了，旧协程操作的还是旧 conn (虽然会报错退出)，或者通过 stopChan 退出
+		// 启动心跳和发送循环
 		go c.heartbeatLoop(stopChan)
 		go c.writePump(conn, stopChan)
 
-		// 3. 阻塞读取 (主循环)
+		// 阻塞读取
 		c.readLoop()
 
-		// 4. 断开清理
+		// 断开处理
+		close(stopChan) // 通知子协程退出
 		c.Conn = nil
 		log.Printf("❌ Disconnected. Reconnecting...")
 		time.Sleep(2 * time.Second)
@@ -121,11 +123,10 @@ func (c *WorkerClient) readLoop() {
 			continue
 		}
 
-		// 分发处理
 		switch msg.Type {
 		case protocol.TypeCommand:
 			c.handleCommand(msg)
-		case protocol.TypeConfig: // [新增] 处理配置下发
+		case protocol.TypeConfig:
 			c.handleConfig(msg)
 		case protocol.TypeLogFiles:
 			c.handleLogFiles(msg)
@@ -139,7 +140,6 @@ func (c *WorkerClient) readLoop() {
 	}
 }
 
-// [修改] 支持动态调整的心跳循环
 func (c *WorkerClient) heartbeatLoop(stopChan chan struct{}) {
 	interval := 5 * time.Second
 	ticker := time.NewTicker(interval)
@@ -147,12 +147,9 @@ func (c *WorkerClient) heartbeatLoop(stopChan chan struct{}) {
 
 	for {
 		select {
-		// [关键修复] 优先响应停止信号
 		case <-stopChan:
 			return
-
 		case <-ticker.C:
-			// 如果 stopChan 已关闭，不要发送
 			select {
 			case <-stopChan:
 				return
@@ -161,7 +158,6 @@ func (c *WorkerClient) heartbeatLoop(stopChan chan struct{}) {
 					c.sendPacket(protocol.TypeHeartbeat)
 				}
 			}
-
 		case newInterval := <-c.updateTickerChan:
 			if newInterval != interval && newInterval > 0 {
 				log.Printf("🔄 Updating heartbeat interval: %v -> %v", interval, newInterval)
@@ -173,33 +169,26 @@ func (c *WorkerClient) heartbeatLoop(stopChan chan struct{}) {
 }
 
 func (c *WorkerClient) writePump(conn *websocket.Conn, stopChan chan struct{}) {
-	// 启动一个 Ping Ticker 保持连接活跃
-	ticker := time.NewTicker(20 * time.Second)
+	ticker := time.NewTicker(20 * time.Second) // Ping interval
 	defer ticker.Stop()
 
 	for {
 		select {
-		// [关键修复] 收到停止信号立即退出
 		case <-stopChan:
 			return
-
 		case msg := <-c.SendChan:
-			// 发送前再次检查是否已停止
 			select {
 			case <-stopChan:
 				return
 			default:
 			}
-
 			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if err := conn.WriteJSON(msg); err != nil {
 				log.Printf("WS Write Error: %v", err)
-				conn.Close() // 这里的 Close 是安全的
+				conn.Close()
 				return
 			}
-
 		case <-ticker.C:
-			// 心跳 Ping
 			select {
 			case <-stopChan:
 				return
@@ -213,188 +202,62 @@ func (c *WorkerClient) writePump(conn *websocket.Conn, stopChan chan struct{}) {
 	}
 }
 
-func (c *WorkerClient) handleCommand(msg protocol.WSMessage) {
-	// 增加调试日志，方便观察指令是否到达
-	log.Printf("📥 Received WS Message Type: %s", msg.Type)
+// -------------------------------------------------------
+// 消息处理逻辑 (使用 c.execMgr)
+// -------------------------------------------------------
 
-	// 解析通用 Map 处理反向隧道
+func (c *WorkerClient) handleCommand(msg protocol.WSMessage) {
+	// 1. 检查是否为隧道请求
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(msg.Payload, &rawMap); err == nil {
 		if action, ok := rawMap["action"].(string); ok && action == "start_tunnel" {
-			// 提取参数
 			sessionID := rawMap["session_id"].(string)
 			tunnelType := rawMap["type"].(string)
-
-			// 启动隧道连接协程
 			go c.establishTunnel(sessionID, tunnelType, rawMap)
 			return
 		}
 	}
 
-	// 1. 处理 InstanceActionRequest (启动/停止)
+	// 2. 实例操作 (Start/Stop)
 	var actionReq protocol.InstanceActionRequest
 	if err := json.Unmarshal(msg.Payload, &actionReq); err == nil && actionReq.Action != "" {
 		log.Printf("执行实例操作: %s -> %s", actionReq.InstanceID, actionReq.Action)
-		if err := executor.HandleAction(actionReq); err != nil {
+		if err := c.execMgr.HandleAction(actionReq); err != nil {
 			log.Printf("操作失败: %v", err)
 		}
 		return
 	}
 
-	// 2. 处理 DeployRequest (部署)
+	// 3. 部署请求
 	var deployReq protocol.DeployRequest
 	if err := json.Unmarshal(msg.Payload, &deployReq); err == nil && deployReq.DownloadURL != "" {
 		log.Printf("开始异步部署: %s", deployReq.ServiceName)
-		// 必须异步，否则会阻塞心跳
 		go func() {
-			executor.ReportStatus(deployReq.InstanceID, "deploying", 0, 0)
-			if err := executor.DeployInstance(deployReq); err != nil {
-				executor.ReportStatus(deployReq.InstanceID, "error", 0, 0)
+			c.execMgr.ReportStatus(deployReq.InstanceID, "deploying", 0, 0)
+			if err := c.execMgr.DeployInstance(deployReq); err != nil {
+				c.execMgr.ReportStatus(deployReq.InstanceID, "error", 0, 0)
 			} else {
-				executor.ReportStatus(deployReq.InstanceID, "stopped", 0, 0)
+				c.execMgr.ReportStatus(deployReq.InstanceID, "stopped", 0, 0)
 			}
 		}()
 		return
 	}
-
-	// 3. 尝试 CommandRequest (CMD)
-	var cmdReq protocol.CommandRequest
-	if err := json.Unmarshal(msg.Payload, &cmdReq); err == nil && cmdReq.Command != "" {
-		log.Printf("📥 Received CMD (Ignored in MVP): %s", cmdReq.Command)
-	}
 }
 
-// [新增] 处理配置消息
 func (c *WorkerClient) handleConfig(msg protocol.WSMessage) {
 	var cfg protocol.HeartbeatResponse
 	if err := json.Unmarshal(msg.Payload, &cfg); err != nil {
 		return
 	}
-
-	// 1. 更新心跳间隔 (发送给 heartbeatLoop)
 	if cfg.HeartbeatInterval > 0 {
 		c.updateTickerChan <- time.Duration(cfg.HeartbeatInterval) * time.Second
 	}
-
-	// 2. 更新本地监控间隔 (直接调用 executor)
 	if cfg.MonitorInterval > 0 {
-		executor.UpdateMonitorInterval(cfg.MonitorInterval)
+		// 使用注入的 execMgr
+		c.execMgr.UpdateMonitorInterval(cfg.MonitorInterval)
 	}
 }
 
-// [新增] 启动反向终端
-func (c *WorkerClient) startReverseTerminal(serverHost, sessionID string) {
-	// 构造 Relay URL
-	// 注意：这里需要处理 ws/wss，简单起见假设和 MasterURL 同协议
-	scheme := "ws"
-	if strings.HasPrefix(c.MasterURL, "https") {
-		scheme = "wss"
-	}
-
-	relayURL := fmt.Sprintf("%s://%s/api/worker/terminal/relay?session_id=%s", scheme, serverHost, sessionID)
-	log.Printf("Terminal: Connecting to relay %s", relayURL)
-
-	// 【关键修复】添加鉴权头
-	header := http.Header{}
-	header.Set("Authorization", "Bearer "+c.Secret)
-
-	conn, _, err := websocket.DefaultDialer.Dial(relayURL, nil)
-	if err != nil {
-		log.Printf("Terminal Relay Dial failed: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	// 启动 PTY
-	var shell string
-	var args []string
-	if runtime.GOOS == "windows" {
-		shell = "cmd.exe"
-	} else {
-		shell = "/bin/bash"
-		args = []string{"-l"}
-	}
-
-	cmd := exec.Command(shell, args...)
-	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
-
-	// 使用 executor 中的工具启动 PTY
-	tty, err := executor.StartTerminal(cmd)
-	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte("Error starting shell: "+err.Error()))
-		return
-	}
-	defer tty.Close()
-
-	// 管道转发
-	errChan := make(chan error, 2)
-
-	// PTY -> WebSocket
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := tty.Read(buf)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
-				errChan <- err
-				return
-			}
-		}
-	}()
-
-	// WebSocket -> PTY
-	type TermMsg struct {
-		Type string `json:"type"`
-		Rows int    `json:"rows"`
-		Cols int    `json:"cols"`
-		Data string `json:"data"`
-	}
-
-	go func() {
-		for {
-			mt, message, err := conn.ReadMessage()
-			if err != nil {
-				errChan <- err
-				return
-			}
-
-			if mt == websocket.BinaryMessage {
-				tty.Write(message)
-			} else if mt == websocket.TextMessage {
-				var msg TermMsg
-				if err := json.Unmarshal(message, &msg); err == nil {
-					if msg.Type == "resize" {
-						tty.Resize(msg.Rows, msg.Cols)
-					}
-				}
-			}
-		}
-	}()
-
-	<-errChan
-	log.Println("Terminal session ended")
-}
-
-// [新增] 供外部模块调用的发送方法
-func (c *WorkerClient) SendStatusReport(report protocol.InstanceStatusReport) {
-	if c == nil || c.Conn == nil {
-		return
-	}
-	// 封装为 WSMessage
-	msg, _ := protocol.NewWSMessage(protocol.TypeStatusReport, "", report)
-
-	// 非阻塞发送
-	select {
-	case c.SendChan <- msg:
-	default:
-		// 缓冲区满则丢弃，监控数据允许少量丢失
-	}
-}
-
-// [新增] 处理获取日志文件列表
 func (c *WorkerClient) handleLogFiles(msg protocol.WSMessage) {
 	var req protocol.LogFilesRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
@@ -402,8 +265,8 @@ func (c *WorkerClient) handleLogFiles(msg protocol.WSMessage) {
 		return
 	}
 
-	// 调用 Executor 获取文件
-	files, err := executor.GetLogFiles(req.InstanceID)
+	// 使用注入的 execMgr
+	files, err := c.execMgr.GetLogFiles(req.InstanceID)
 
 	resp := protocol.LogFilesResp{
 		InstanceID: req.InstanceID,
@@ -413,26 +276,80 @@ func (c *WorkerClient) handleLogFiles(msg protocol.WSMessage) {
 		resp.Error = err.Error()
 	}
 
-	// 发回响应 (带上原来的 Message ID)
 	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
-
 	select {
 	case c.SendChan <- respMsg:
 	default:
-		log.Printf("Send buffer full, dropped response for %s", msg.Id)
 	}
 }
 
-// [新增] 辅助：发送错误响应
-func (c *WorkerClient) sendErrorResponse(reqID string, errMsg string) {
-	resp := protocol.LogFilesResp{Error: errMsg}
-	msg, _ := protocol.NewWSMessage(protocol.TypeResponse, reqID, resp)
-	c.SendChan <- msg
+func (c *WorkerClient) handleCleanupCache(msg protocol.WSMessage) {
+	var req protocol.CleanupCacheRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid payload")
+		return
+	}
+
+	result, err := c.execMgr.CleanupPackageCache(req.Retain)
+
+	resp := protocol.CleanupCacheResponse{
+		FreedBytes:   result.FreedBytes,
+		DeletedFiles: result.DeletedFiles,
+	}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+
+	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
+	c.SendChan <- respMsg
 }
 
-// [新增] 建立反向隧道
+func (c *WorkerClient) handleScanOrphans(msg protocol.WSMessage) {
+	var req protocol.OrphanScanRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid payload")
+		return
+	}
+
+	sysMap := make(map[string]bool)
+	for _, s := range req.ValidSystems {
+		sysMap[s] = true
+	}
+	instMap := make(map[string]bool)
+	for _, i := range req.ValidInstances {
+		instMap[i] = true
+	}
+
+	items, err := c.execMgr.ScanOrphans(sysMap, instMap)
+
+	resp := protocol.OrphanScanNodeResponse{Items: items}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+
+	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
+	c.SendChan <- respMsg
+}
+
+func (c *WorkerClient) handleDeleteOrphans(msg protocol.WSMessage) {
+	var req protocol.OrphanDeleteRequestWorker
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid payload")
+		return
+	}
+
+	count, _ := c.execMgr.DeleteOrphans(req.Items)
+
+	resp := protocol.OrphanDeleteResponse{DeletedCount: count}
+	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
+	c.SendChan <- respMsg
+}
+
+// -------------------------------------------------------
+// 隧道 & 辅助
+// -------------------------------------------------------
+
 func (c *WorkerClient) establishTunnel(sessionID, tunnelType string, params map[string]interface{}) {
-	// 1. 构造隧道 URL
 	u, _ := url.Parse(c.MasterURL)
 	switch u.Scheme {
 	case "https":
@@ -447,111 +364,53 @@ func (c *WorkerClient) establishTunnel(sessionID, tunnelType string, params map[
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+c.Secret)
 
-	// 2. 发起连接
 	conn, _, err := websocket.DefaultDialer.Dial(tunnelURL, header)
 	if err != nil {
 		log.Printf("❌ Tunnel dial failed: %v", err)
 		return
 	}
-	defer conn.Close()
+	// 注意：连接移交给 Handler 处理，Handler 负责 Close
 
-	// 3. 根据类型移交控制权
 	if tunnelType == "log" {
 		instanceID, _ := params["instance_id"].(string)
 		logKey, _ := params["log_key"].(string)
-		// 调用 Handler 层的逻辑处理连接
-		handler.ServeLogStream(conn, instanceID, logKey)
+		// 【注意】这里传入 c.execMgr，因为 Handler 需要它来解析路径
+		handler.ServeLogStream(conn, instanceID, logKey, c.execMgr)
 	} else if tunnelType == "terminal" {
 		handler.ServeTerminal(conn)
+	} else {
+		conn.Close()
 	}
 }
 
-// [新增] 处理清理缓存
-func (c *WorkerClient) handleCleanupCache(msg protocol.WSMessage) {
-	var req protocol.CleanupCacheRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		c.sendErrorResponse(msg.Id, "invalid payload")
+func (c *WorkerClient) SendStatusReport(report protocol.InstanceStatusReport) {
+	if c == nil || c.Conn == nil {
 		return
 	}
-
-	result, err := executor.CleanupPackageCache(req.Retain)
-
-	resp := protocol.CleanupCacheResponse{
-		FreedBytes:   result.FreedBytes,
-		DeletedFiles: result.DeletedFiles,
+	msg, _ := protocol.NewWSMessage(protocol.TypeStatusReport, "", report)
+	select {
+	case c.SendChan <- msg:
+	default:
 	}
-	if err != nil {
-		resp.Error = err.Error()
-	}
-
-	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
-	c.SendChan <- respMsg
 }
 
-// [新增] 处理扫描孤儿
-func (c *WorkerClient) handleScanOrphans(msg protocol.WSMessage) {
-	var req protocol.OrphanScanRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		c.sendErrorResponse(msg.Id, "invalid payload")
-		return
-	}
-
-	// 转换 Map
-	sysMap := make(map[string]bool)
-	for _, s := range req.ValidSystems {
-		sysMap[s] = true
-	}
-	instMap := make(map[string]bool)
-	for _, i := range req.ValidInstances {
-		instMap[i] = true
-	}
-
-	items, err := executor.ScanOrphans(sysMap, instMap)
-
-	resp := protocol.OrphanScanNodeResponse{
-		Items: items,
-	}
-	if err != nil {
-		resp.Error = err.Error()
-	}
-
-	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
-	c.SendChan <- respMsg
+func (c *WorkerClient) sendErrorResponse(reqID string, errMsg string) {
+	// 这里复用 LogFilesResp 的 Error 字段作为通用错误返回
+	// 实际项目中最好有通用的 ErrorResponse 结构
+	resp := protocol.LogFilesResp{Error: errMsg}
+	msg, _ := protocol.NewWSMessage(protocol.TypeResponse, reqID, resp)
+	c.SendChan <- msg
 }
 
-// [新增] 处理删除孤儿
-func (c *WorkerClient) handleDeleteOrphans(msg protocol.WSMessage) {
-	var req protocol.OrphanDeleteRequestWorker
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		c.sendErrorResponse(msg.Id, "invalid payload")
-		return
-	}
-
-	count, err := executor.DeleteOrphans(req.Items)
-
-	resp := protocol.OrphanDeleteResponse{
-		DeletedCount: count,
-	}
-	if err != nil {
-		resp.Error = err.Error()
-	}
-
-	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
-	c.SendChan <- respMsg
-}
-
-// [重构] 统一发送方法
 func (c *WorkerClient) sendPacket(msgType string) {
+	// agent 包是无状态的，可以直接调用
 	info := agent.GetNodeInfo()
 	status := agent.GetStatus()
 	req := protocol.RegisterRequest{Info: info, Status: status}
 
 	wsMsg, _ := protocol.NewWSMessage(msgType, "", req)
-
-	// 非阻塞发送
 	select {
 	case c.SendChan <- wsMsg:
 	default:
-		// 缓冲区满则忽略
 	}
 }

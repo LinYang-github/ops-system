@@ -17,37 +17,13 @@ import (
 	"syscall"
 	"time"
 
-	"ops-system/pkg/config"
 	"ops-system/pkg/protocol"
 
 	"github.com/shirou/gopsutil/v3/process"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// 全局变量
-var (
-	baseWorkDir  string // .../instances
-	pkgCacheDir  string // .../instances/pkg_cache
-	logRotateCfg config.LogRotateConfig
-)
-
-// 下载锁
-var downloadLocks sync.Map
-
-// Init 初始化基础目录
-func Init(dir string, cfg config.LogRotateConfig) {
-	baseWorkDir = dir
-	pkgCacheDir = filepath.Join(baseWorkDir, "pkg_cache")
-	logRotateCfg = cfg
-
-	os.MkdirAll(baseWorkDir, 0755)
-	os.MkdirAll(pkgCacheDir, 0755)
-
-	log.Printf("Executor Init.")
-	log.Printf(" > Work Dir:  %s", baseWorkDir)
-	log.Printf(" > Cache Dir: %s", pkgCacheDir)
-}
-
+// StartProcessResult 进程启动结果
 type StartProcessResult struct {
 	Status string
 	PID    int
@@ -55,15 +31,90 @@ type StartProcessResult struct {
 	Error  error
 }
 
+// InstanceDirInfo 实例目录信息
 type InstanceDirInfo struct {
 	InstanceID string
 	WorkDir    string
 }
 
 // -------------------------------------------------------
-// 扫描与目录查找逻辑
+// 目录查找与扫描逻辑 (挂载在 Manager 上)
 // -------------------------------------------------------
 
+// GetAllLocalInstances 获取本地所有实例 (包含标准实例和纳管实例)
+func (m *Manager) GetAllLocalInstances() []InstanceDirInfo {
+	var list []InstanceDirInfo
+	if m.workDir == "" {
+		return list
+	}
+
+	// 1. 扫描标准实例目录
+	list = append(list, scanDir(m.workDir)...)
+
+	// 2. 扫描纳管实例目录 (instances/external)
+	extDir := filepath.Join(m.workDir, "external")
+	list = append(list, scanDir(extDir)...)
+
+	return list
+}
+
+// FindInstanceDir 根据 InstanceID 查找其实际工作目录
+func (m *Manager) FindInstanceDir(instID string) (string, bool) {
+	if m.workDir == "" {
+		return "", false
+	}
+
+	// 辅助查找函数
+	searchInRoot := func(rootDir string) (string, bool) {
+		systems, err := os.ReadDir(rootDir)
+		if err != nil {
+			return "", false
+		}
+		for _, sys := range systems {
+			if !sys.IsDir() {
+				continue
+			}
+			// 跳过特殊目录
+			if sys.Name() == "pkg_cache" || sys.Name() == "external" {
+				continue
+			}
+			sysPath := filepath.Join(rootDir, sys.Name())
+			insts, err := os.ReadDir(sysPath)
+			if err != nil {
+				continue
+			}
+			for _, inst := range insts {
+				if !inst.IsDir() {
+					continue
+				}
+				name := inst.Name()
+				// 匹配规则：目录名等于 ID，或者目录名以 "_ID" 结尾 (ServiceName_InstanceID)
+				if name == instID {
+					return filepath.Join(sysPath, name), true
+				}
+				if strings.HasSuffix(name, "_"+instID) {
+					return filepath.Join(sysPath, name), true
+				}
+			}
+		}
+		return "", false
+	}
+
+	// 1. 先在根目录下找 (标准实例)
+	if path, found := searchInRoot(m.workDir); found {
+		return path, true
+	}
+
+	// 2. 去 external 目录下找 (纳管实例)
+	extDir := filepath.Join(m.workDir, "external")
+	if path, found := searchInRoot(extDir); found {
+		return path, true
+	}
+
+	return "", false
+}
+
+// scanDir 扫描指定目录下的 System/Instance 结构 (私有辅助函数)
 func scanDir(parentDir string) []InstanceDirInfo {
 	var list []InstanceDirInfo
 	sysEntries, err := os.ReadDir(parentDir)
@@ -92,6 +143,7 @@ func scanDir(parentDir string) []InstanceDirInfo {
 			}
 			instName := inst.Name()
 			instID := instName
+			// 尝试解析 ServiceName_InstanceID 格式
 			lastIdx := strings.LastIndex(instName, "_")
 			if lastIdx != -1 && lastIdx < len(instName)-1 {
 				instID = instName[lastIdx+1:]
@@ -106,79 +158,29 @@ func scanDir(parentDir string) []InstanceDirInfo {
 	return list
 }
 
-func GetAllLocalInstances() []InstanceDirInfo {
-	var list []InstanceDirInfo
-	if baseWorkDir == "" {
-		return list
-	}
-	list = append(list, scanDir(baseWorkDir)...)
-	extDir := filepath.Join(baseWorkDir, "external")
-	list = append(list, scanDir(extDir)...)
-	return list
-}
-
-func FindInstanceDir(instID string) (string, bool) {
-	if baseWorkDir == "" {
-		return "", false
-	}
-	searchInRoot := func(rootDir string) (string, bool) {
-		systems, err := os.ReadDir(rootDir)
-		if err != nil {
-			return "", false
-		}
-		for _, sys := range systems {
-			if !sys.IsDir() {
-				continue
-			}
-			if sys.Name() == "pkg_cache" || sys.Name() == "external" {
-				continue
-			}
-			sysPath := filepath.Join(rootDir, sys.Name())
-			insts, err := os.ReadDir(sysPath)
-			if err != nil {
-				continue
-			}
-			for _, inst := range insts {
-				if !inst.IsDir() {
-					continue
-				}
-				name := inst.Name()
-				if name == instID {
-					return filepath.Join(sysPath, name), true
-				}
-				if strings.HasSuffix(name, "_"+instID) {
-					return filepath.Join(sysPath, name), true
-				}
-			}
-		}
-		return "", false
-	}
-	if path, found := searchInRoot(baseWorkDir); found {
-		return path, true
-	}
-	extDir := filepath.Join(baseWorkDir, "external")
-	if path, found := searchInRoot(extDir); found {
-		return path, true
-	}
-	return "", false
-}
-
 // -------------------------------------------------------
-// 部署逻辑
+// 部署逻辑 (挂载在 Manager 上)
 // -------------------------------------------------------
 
-func DeployInstance(req protocol.DeployRequest) error {
-	if baseWorkDir == "" {
-		return fmt.Errorf("executor not initialized")
+// DeployInstance 执行部署流程
+func (m *Manager) DeployInstance(req protocol.DeployRequest) error {
+	if m.workDir == "" {
+		return fmt.Errorf("executor manager not initialized")
 	}
-	cachedZipPath, err := ensurePackageCached(req.ServiceName, req.Version, req.DownloadURL)
+
+	// 1. 确保包已缓存 (下载)
+	cachedZipPath, err := m.ensurePackageCached(req.ServiceName, req.Version, req.DownloadURL)
 	if err != nil {
 		return fmt.Errorf("cache package failed: %v", err)
 	}
+
+	// 2. 准备实例目录
 	dirName := fmt.Sprintf("%s_%s", req.ServiceName, req.InstanceID)
-	workDir := filepath.Join(baseWorkDir, req.SystemName, dirName)
+	workDir := filepath.Join(m.workDir, req.SystemName, dirName)
 
 	log.Printf("[Deploy] Extracting %s -> %s", filepath.Base(cachedZipPath), workDir)
+
+	// 3. 清理旧目录并重新解压
 	os.RemoveAll(workDir)
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return err
@@ -187,27 +189,25 @@ func DeployInstance(req protocol.DeployRequest) error {
 		return fmt.Errorf("unzip failed: %v", err)
 	}
 
-	// 【新增】配置覆写逻辑
-	// 如果 Master 下发了 Readiness 配置，我们需要更新解压出来的 service.json
+	// 4. 配置覆写 (Readiness Probe)
 	if req.ReadinessType != "" {
 		manifestPath := filepath.Join(workDir, "service.json")
-
-		// 1. 读取现有文件
-		m, err := readManifest(workDir)
+		// 读取现有文件
+		mf, err := readManifest(workDir)
 		if err != nil {
 			log.Printf("[Deploy] Warning: service.json read failed: %v", err)
 		} else {
-			// 2. 覆盖字段
-			m.ReadinessType = req.ReadinessType
-			m.ReadinessTarget = req.ReadinessTarget
-			m.ReadinessTimeout = req.ReadinessTimeout
+			// 覆盖字段
+			mf.ReadinessType = req.ReadinessType
+			mf.ReadinessTarget = req.ReadinessTarget
+			mf.ReadinessTimeout = req.ReadinessTimeout
 
-			// 3. 写回文件
+			// 写回文件
 			file, err := os.Create(manifestPath)
 			if err == nil {
 				encoder := json.NewEncoder(file)
 				encoder.SetIndent("", "  ")
-				encoder.Encode(m)
+				encoder.Encode(mf)
 				file.Close()
 				log.Printf("[Deploy] Updated readiness config in service.json")
 			}
@@ -217,78 +217,104 @@ func DeployInstance(req protocol.DeployRequest) error {
 	return nil
 }
 
-func ensurePackageCached(name, version, url string) (string, error) {
+// ensurePackageCached 下载并缓存服务包 (带文件锁)
+func (m *Manager) ensurePackageCached(name, version, url string) (string, error) {
 	fileName := fmt.Sprintf("%s_%s.zip", name, version)
-	cachePath := filepath.Join(pkgCacheDir, fileName)
+	cachePath := filepath.Join(m.pkgCacheDir, fileName)
+
+	// 1. 快速检查：如果已存在且非空，直接返回
 	if info, err := os.Stat(cachePath); err == nil && info.Size() > 0 {
 		return cachePath, nil
 	}
-	muInterface, _ := downloadLocks.LoadOrStore(fileName, &sync.Mutex{})
+
+	// 2. 加锁下载 (防止同一文件并发下载)
+	// 使用 Manager 中的 sync.Map 存储锁
+	muInterface, _ := m.downloadLocks.LoadOrStore(fileName, &sync.Mutex{})
 	mu := muInterface.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
+
+	// 双重检查
 	if info, err := os.Stat(cachePath); err == nil && info.Size() > 0 {
 		return cachePath, nil
 	}
-	if err := os.MkdirAll(pkgCacheDir, 0755); err != nil {
+
+	if err := os.MkdirAll(m.pkgCacheDir, 0755); err != nil {
 		return "", fmt.Errorf("create cache dir failed: %v", err)
 	}
+
 	log.Printf("[Cache] Downloading to: %s", cachePath)
 	tmpFile := cachePath + ".tmp"
-	resp, err := http.Get(url)
+
+	// 执行 HTTP 下载
+	// 建议：此处可以复用 utils.GlobalClient，但为了解耦暂用 http.Get
+	// 如果是大文件，建议加上 Context 和 Timeout 控制
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("http error: %d", resp.StatusCode)
 	}
+
 	out, err := os.Create(tmpFile)
 	if err != nil {
 		return "", err
 	}
+
+	// 流式写入
 	_, err = io.Copy(out, resp.Body)
 	out.Close()
 	if err != nil {
 		os.Remove(tmpFile)
 		return "", err
 	}
+
+	// 原子重命名
 	if err := os.Rename(tmpFile, cachePath); err != nil {
 		return "", fmt.Errorf("rename failed: %v", err)
 	}
+
 	return cachePath, nil
 }
 
 // -------------------------------------------------------
-// 进程控制逻辑
+// 进程控制逻辑 (挂载在 Manager 上)
 // -------------------------------------------------------
 
-func HandleAction(req protocol.InstanceActionRequest) error {
-	workDir, found := FindInstanceDir(req.InstanceID)
+// HandleAction 处理实例的操作请求
+func (m *Manager) HandleAction(req protocol.InstanceActionRequest) error {
+	workDir, found := m.FindInstanceDir(req.InstanceID)
+
 	if !found {
+		// 如果是销毁操作，且目录不存在，视为成功
 		if req.Action == "destroy" {
 			return nil
 		}
 		return fmt.Errorf("instance dir not found for ID: %s", req.InstanceID)
 	}
+
 	switch req.Action {
 	case "start":
-		res := StartProcess(workDir)
+		res := m.StartProcess(workDir)
 		return res.Error
 	case "stop":
-		_, _, err := StopProcess(workDir)
+		_, _, err := m.StopProcess(workDir)
 		return err
 	case "destroy":
-		StopProcess(workDir)
+		m.StopProcess(workDir)
 		return os.RemoveAll(workDir)
 	}
 	return nil
 }
 
 // StartProcess 启动进程 (包含就绪检测)
-func StartProcess(workDir string) StartProcessResult {
+func (m *Manager) StartProcess(workDir string) StartProcessResult {
 	// 1. 读取配置
-	m, err := readManifest(workDir)
+	mf, err := readManifest(workDir)
 	if err != nil {
 		return StartProcessResult{Status: "error", Error: err}
 	}
@@ -301,13 +327,13 @@ func StartProcess(workDir string) StartProcessResult {
 
 	// 3. 路径与环境准备
 	execDir := workDir
-	if m.IsExternal {
-		execDir = m.ExternalWorkDir
+	if mf.IsExternal {
+		execDir = mf.ExternalWorkDir
 	}
 
-	cmdPath := m.Entrypoint
+	cmdPath := mf.Entrypoint
 	if !filepath.IsAbs(cmdPath) {
-		cmdPath = filepath.Join(execDir, m.Entrypoint)
+		cmdPath = filepath.Join(execDir, mf.Entrypoint)
 	}
 
 	absEntrypoint, err := resolveExecutable(cmdPath)
@@ -318,51 +344,45 @@ func StartProcess(workDir string) StartProcessResult {
 	log.Printf("[Start] Executing: %s (CWD: %s)", absEntrypoint, execDir)
 
 	// 4. 构建命令
-	cmd := exec.Command(absEntrypoint, m.Args...)
+	cmd := exec.Command(absEntrypoint, mf.Args...)
 	cmd.Dir = execDir
-	cmd.Env = buildEnv(m.Env)
+	cmd.Env = buildEnv(mf.Env)
 
-	// 日志重定向
+	// 日志重定向 (使用 m.logRotateCfg)
 	logPath := filepath.Join(workDir, "app.log")
 
 	logger := &lumberjack.Logger{
 		Filename:   logPath,
-		MaxSize:    logRotateCfg.MaxSize,
-		MaxBackups: logRotateCfg.MaxBackups,
-		MaxAge:     logRotateCfg.MaxAge,
-		Compress:   logRotateCfg.Compress,
+		MaxSize:    m.logRotateCfg.MaxSize,
+		MaxBackups: m.logRotateCfg.MaxBackups,
+		MaxAge:     m.logRotateCfg.MaxAge,
+		Compress:   m.logRotateCfg.Compress,
 		LocalTime:  true,
 	}
 
-	// 【核心逻辑】如果配置了“每次启动生成新文件”
-	if logRotateCfg.RotateOnStart {
-		// 先检查文件是否存在，如果文件不存在就不需要 Rotate (否则会生成空的备份文件)
+	// 如果配置了“每次启动生成新文件”
+	if m.logRotateCfg.RotateOnStart {
 		if _, err := os.Stat(logPath); err == nil {
-			// Rotate 会做两件事：
-			// 1. 把现有的 app.log 重命名为 app-2023-xx-xx...log (归档)
-			// 2. 准备创建一个新的 app.log 用于写入
 			if err := logger.Rotate(); err != nil {
-				// 如果轮转失败，打印日志但继续运行（降级为追加模式）
 				fmt.Printf("[Warn] Failed to rotate log on start: %v\n", err)
 			}
 		}
 	}
 
-	// 注意：lumberjack 实现了 io.Writer，可以直接赋值给 Stdout
 	cmd.Stdout = logger
 	cmd.Stderr = logger
 
 	// 【平台钩子】启动前准备 (Setsid / CreationFlags)
+	// 注意：prepareProcess 是 process_unix.go/process_windows.go 中的包级函数
 	prepareProcess(cmd)
 
 	// 5. 执行启动
 	if err := cmd.Start(); err != nil {
-		// 注意：如果是 logger，通常不需要显式 Close，除非你想强制刷新
-		// logger.Close()
 		return StartProcessResult{Status: "error", Error: fmt.Errorf("start failed: %v", err)}
 	}
 
-	// 【平台钩子】关联 Job Object
+	// 【平台钩子】关联 Job Object (防止僵尸进程)
+	// attachProcessToManager 是 process_windows.go 中的包级函数 (Linux 下为空操作)
 	instID := filepath.Base(workDir)
 	if err := attachProcessToManager(instID, cmd.Process.Pid); err != nil {
 		log.Printf("[Warn] Attach to job failed: %v", err)
@@ -371,20 +391,20 @@ func StartProcess(workDir string) StartProcessResult {
 	var targetPID int
 
 	// 6. 获取目标 PID (Spawn vs Match)
-	if m.IsExternal && m.PidStrategy == "match" {
+	if mf.IsExternal && mf.PidStrategy == "match" {
 		cmd.Wait() // 等待启动脚本结束
 
 		// 轮询查找目标进程
 		for i := 0; i < 5; i++ {
 			time.Sleep(500 * time.Millisecond)
-			pid, err := findProcessPID(m.ProcessName, m.ExternalWorkDir)
+			pid, err := findProcessPID(mf.ProcessName, mf.ExternalWorkDir)
 			if err == nil && pid > 0 {
 				targetPID = pid
 				break
 			}
 		}
 		if targetPID == 0 {
-			return StartProcessResult{Status: "error", Error: fmt.Errorf("process match failed for: %s", m.ProcessName)}
+			return StartProcessResult{Status: "error", Error: fmt.Errorf("process match failed for: %s", mf.ProcessName)}
 		}
 	} else {
 		// Spawn 模式
@@ -395,15 +415,12 @@ func StartProcess(workDir string) StartProcessResult {
 	// 写入 PID 文件
 	os.WriteFile(filepath.Join(workDir, "pid"), []byte(strconv.Itoa(targetPID)), 0644)
 
-	// 7. 【核心新增】就绪检测 (Readiness Probe)
-	// 进程虽然起来了，但服务可能还没准备好 (e.g. Nacos 初始化中)
-	if m.ReadinessType != "" && m.ReadinessType != "none" {
-		log.Printf("[Start] Waiting for readiness (%s -> %s)...", m.ReadinessType, m.ReadinessTarget)
+	// 7. 就绪检测 (Readiness Probe)
+	if mf.ReadinessType != "" && mf.ReadinessType != "none" {
+		log.Printf("[Start] Waiting for readiness (%s -> %s)...", mf.ReadinessType, mf.ReadinessTarget)
 
-		if err := waitReady(m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout); err != nil {
-			// 检测失败，视为启动失败
-			// 策略选择：你可以选择这里 kill 进程，或者保留进程但返回 error 让用户处理
-			// 这里我们返回 error，前端会显示红色状态，用户可以查看日志判断
+		// waitReady 是 probe.go 中的包级函数
+		if err := waitReady(mf.ReadinessType, mf.ReadinessTarget, mf.ReadinessTimeout); err != nil {
 			return StartProcessResult{
 				Status: "error",
 				PID:    targetPID,
@@ -418,8 +435,8 @@ func StartProcess(workDir string) StartProcessResult {
 }
 
 // StopProcess 停止进程
-func StopProcess(workDir string) (status string, pid int, err error) {
-	m, err := readManifest(workDir)
+func (m *Manager) StopProcess(workDir string) (status string, pid int, err error) {
+	mf, err := readManifest(workDir)
 
 	// 1. 读取 PID
 	pidPath := filepath.Join(workDir, "pid")
@@ -431,22 +448,21 @@ func StopProcess(workDir string) (status string, pid int, err error) {
 	targetPID, _ := strconv.Atoi(string(data))
 
 	// 2. 优先执行自定义停止命令
-	if m != nil && m.StopEntrypoint != "" {
+	if mf != nil && mf.StopEntrypoint != "" {
 		execDir := workDir
-		if m.IsExternal {
-			execDir = m.ExternalWorkDir
+		if mf.IsExternal {
+			execDir = mf.ExternalWorkDir
 		}
-		cmdPath := m.StopEntrypoint
+		cmdPath := mf.StopEntrypoint
 		if !filepath.IsAbs(cmdPath) {
 			cmdPath = filepath.Join(execDir, cmdPath)
 		}
 
-		// 尝试解析并执行
 		if absStop, resolveErr := resolveExecutable(cmdPath); resolveErr == nil {
-			cmd := exec.Command(absStop, m.StopArgs...)
+			cmd := exec.Command(absStop, mf.StopArgs...)
 			cmd.Dir = execDir
-			cmd.Env = buildEnv(m.Env)
-			// 执行停止脚本，如果有错只打印日志，继续执行强制杀进程作为保底
+			cmd.Env = buildEnv(mf.Env)
+
 			if out, runErr := cmd.CombinedOutput(); runErr != nil {
 				log.Printf("[Stop] Custom stop command failed: %v, output: %s", runErr, string(out))
 			} else {
@@ -456,13 +472,10 @@ func StopProcess(workDir string) (status string, pid int, err error) {
 	}
 
 	// 3. 强制终止逻辑 (平台特定)
-	// 【关键修改】如果 Kill 失败，必须返回错误，而不是吞掉
 	if targetPID > 0 {
-		// 获取实例 ID 用于 Windows Job Object，Linux 下其实用不到
 		instID := filepath.Base(workDir)
-
+		// killProcessTree 是 process_unix.go/process_windows.go 中的包级函数
 		if err := killProcessTree(targetPID, instID); err != nil {
-			// 如果是 "进程不存在" 错误，我们认为这是成功的
 			if !isProcessNotFoundError(err) {
 				return "error", targetPID, fmt.Errorf("kill process failed: %v", err)
 			}
@@ -474,24 +487,19 @@ func StopProcess(workDir string) (status string, pid int, err error) {
 	return "stopped", 0, nil
 }
 
-// 辅助函数：判断错误是否为“进程不存在”
+// -------------------------------------------------------
+// 无状态辅助函数 (Private Helpers)
+// -------------------------------------------------------
+
 func isProcessNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Unix: ESRCH (no such process)
-	if strings.Contains(err.Error(), "no such process") {
-		return true
-	}
-	// Windows: specific error text
-	if strings.Contains(err.Error(), "element not found") { // Win32 ERROR_NOT_FOUND
-		return true
-	}
-	// Go os.FindProcess 某些情况的返回
-	if strings.Contains(err.Error(), "process already finished") {
-		return true
-	}
-	return false
+	s := err.Error()
+	// Unix / Windows / Go internal errors
+	return strings.Contains(s, "no such process") ||
+		strings.Contains(s, "element not found") ||
+		strings.Contains(s, "process already finished")
 }
 
 func readManifest(workDir string) (*protocol.ServiceManifest, error) {
@@ -500,16 +508,20 @@ func readManifest(workDir string) (*protocol.ServiceManifest, error) {
 		return nil, err
 	}
 	defer f.Close()
-	var m protocol.ServiceManifest
-	json.NewDecoder(f).Decode(&m)
-	return &m, nil
+	var mf protocol.ServiceManifest
+	if err := json.NewDecoder(f).Decode(&mf); err != nil {
+		return nil, err
+	}
+	return &mf, nil
 }
+
 func resolveExecutable(path string) (string, error) {
 	if runtime.GOOS == "windows" && filepath.Ext(path) == "" {
 		if _, err := os.Stat(path + ".exe"); err == nil {
 			path += ".exe"
 		}
 	} else {
+		// Linux 下尝试赋予执行权限
 		os.Chmod(path, 0755)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -517,6 +529,7 @@ func resolveExecutable(path string) (string, error) {
 	}
 	return path, nil
 }
+
 func buildEnv(custom map[string]string) []string {
 	env := os.Environ()
 	for k, v := range custom {
@@ -524,8 +537,8 @@ func buildEnv(custom map[string]string) []string {
 	}
 	return env
 }
+
 func isRunning(workDir string) bool {
-	// ... (代码同前，略)
 	pidPath := filepath.Join(workDir, "pid")
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
@@ -535,61 +548,101 @@ func isRunning(workDir string) bool {
 	if pid <= 0 {
 		return false
 	}
+
+	// 使用 os.FindProcess + Signal(0) 检查进程是否存在
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	if runtime.GOOS != "windows" {
+
+	if runtime.GOOS == "windows" {
+		// Windows 下 FindProcess 总是成功，需要额外检查
+		// 这里简单假设如果没报错就是活着，实际上可能需要更复杂的 syscall 检查
+		// 或者使用 gopsutil 检查
+		exists, _ := process.PidExists(int32(pid))
+		return exists
+	} else {
+		// Unix 发送 Signal 0 不会真的杀进程，只检查是否存在
 		if err := proc.Signal(syscall.Signal(0)); err != nil {
 			return false
 		}
 	}
-	_ = proc
 	return true
 }
+
 func getPID(workDir string) int {
 	data, _ := os.ReadFile(filepath.Join(workDir, "pid"))
 	pid, _ := strconv.Atoi(string(data))
 	return pid
 }
+
 func unzip(src, dest string) error {
 	r, err := zip.OpenReader(src)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
+
 	for _, f := range r.File {
+		// 防止 Zip Slip 漏洞
 		fpath := filepath.Join(dest, f.Name)
-		if !filepath.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal path")
+		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
+			return fmt.Errorf("illegal file path: %s", f.Name)
 		}
+
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(fpath, os.ModePerm)
 			continue
 		}
-		os.MkdirAll(filepath.Dir(fpath), os.ModePerm)
-		out, _ := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		rc, _ := f.Open()
-		io.Copy(out, rc)
-		out.Close()
+
+		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
+			return err
+		}
+
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			return err
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
 		rc.Close()
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
 func findProcessPID(nameKeyword string, workDir string) (int, error) {
 	procs, err := process.Processes()
 	if err != nil {
 		return 0, err
 	}
-	workDir = filepath.Clean(workDir)
+
+	cleanWorkDir := filepath.Clean(workDir)
+
 	for _, p := range procs {
 		n, _ := p.Name()
 		cmd, _ := p.Cmdline()
-		if strings.Contains(strings.ToLower(n), strings.ToLower(nameKeyword)) || strings.Contains(strings.ToLower(cmd), strings.ToLower(nameKeyword)) {
-			if cwd, err := p.Cwd(); err == nil && filepath.Clean(cwd) == workDir {
-				return int(p.Pid), nil
+
+		// 模糊匹配进程名或命令行
+		if strings.Contains(strings.ToLower(n), strings.ToLower(nameKeyword)) ||
+			strings.Contains(strings.ToLower(cmd), strings.ToLower(nameKeyword)) {
+
+			// 进一步匹配工作目录 (如果能获取到)
+			if cwd, err := p.Cwd(); err == nil {
+				if filepath.Clean(cwd) == cleanWorkDir {
+					return int(p.Pid), nil
+				}
 			}
 		}
 	}
-	return 0, fmt.Errorf("not found")
+	return 0, fmt.Errorf("process not found")
 }

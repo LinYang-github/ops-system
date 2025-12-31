@@ -1,46 +1,68 @@
 package handler
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"os/exec" // 用于执行系统命令
-	"runtime" // 用于判断操作系统
-	"time"
+	"os/exec"
+	"runtime"
 
 	"ops-system/internal/worker/executor"
 	"ops-system/pkg/protocol"
+
+	"github.com/gorilla/websocket" // 引入 websocket 包
 )
 
-var masterBaseURL string // 存储 Master 地址
-
-// InitHandler 初始化 Handler，传入 Master 地址
-func InitHandler(url string) {
-	masterBaseURL = url
+// [修复] 定义包级 upgrader，供 log_stream.go 和 terminal.go 使用
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// StartWorkerServer 启动 Worker HTTP Server
-func StartWorkerServer(port string) {
-	http.HandleFunc("/api/exec", handleExec)
-	http.HandleFunc("/api/terminal/ws", HandleTerminal)
-	http.HandleFunc("/api/deploy", handleDeploy)
-	http.HandleFunc("/api/instance/action", handleInstanceAction) // 处理实例启停
-	http.HandleFunc("/api/external/register", handleRegisterExternal)
-	http.HandleFunc("/api/maintenance/cleanup_cache", handleCleanupCache)
-	http.HandleFunc("/api/maintenance/scan_orphans", handleScanOrphans)
-	http.HandleFunc("/api/maintenance/delete_orphans", handleDeleteOrphans)
-
-	http.HandleFunc("/api/log/ws", handleLogStream)
-	http.HandleFunc("/api/log/files", handleGetLogFiles)
-	log.Printf("Worker HTTP Server started on %s", port)
-	http.ListenAndServe(port, nil)
+// WorkerHandler 封装 Worker 端的 HTTP 处理器
+type WorkerHandler struct {
+	execMgr *executor.Manager
 }
 
-// handleRegisterExternal 处理纳管服务注册 (新增)
-func handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
+// NewWorkerHandler 构造函数
+func NewWorkerHandler(mgr *executor.Manager) *WorkerHandler {
+	return &WorkerHandler{
+		execMgr: mgr,
+	}
+}
+
+// RegisterRoutes 注册路由到默认的 ServeMux
+func (h *WorkerHandler) RegisterRoutes() {
+	http.HandleFunc("/api/exec", h.handleExec)
+
+	// 这些已经是 WorkerHandler 的方法 (需确保 terminal.go 和 log_stream.go 已更新)
+	http.HandleFunc("/api/terminal/ws", h.HandleTerminal)
+	http.HandleFunc("/api/log/ws", h.HandleLogStream)
+
+	http.HandleFunc("/api/deploy", h.handleDeploy)
+	http.HandleFunc("/api/instance/action", h.handleInstanceAction)
+	http.HandleFunc("/api/external/register", h.handleRegisterExternal)
+	http.HandleFunc("/api/maintenance/cleanup_cache", h.handleCleanupCache)
+	http.HandleFunc("/api/maintenance/scan_orphans", h.handleScanOrphans)
+	http.HandleFunc("/api/maintenance/delete_orphans", h.handleDeleteOrphans)
+	http.HandleFunc("/api/log/files", h.handleGetLogFiles)
+}
+
+// StartWorkerServer 启动 HTTP 服务
+// 保留此函数以兼容部分旧调用，但主要逻辑在 main.go 中直接 ListenAndServe
+func StartWorkerServer(addr string) {
+	log.Printf("Worker HTTP Server started on %s", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatalf("Worker HTTP Server failed: %v", err)
+	}
+}
+
+// -------------------------------------------------------
+// Handlers
+// -------------------------------------------------------
+
+// handleRegisterExternal 处理纳管服务注册
+func (h *WorkerHandler) handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -52,8 +74,7 @@ func handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 调用 executor 在 instances/external 下生成配置和目录
-	if err := executor.RegisterExternal(req); err != nil {
+	if err := h.execMgr.RegisterExternal(req); err != nil {
 		log.Printf("[External] Register failed: %v", err)
 		http.Error(w, err.Error(), 500)
 		return
@@ -64,70 +85,58 @@ func handleRegisterExternal(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeploy 部署实例 (异步化)
-func handleDeploy(w http.ResponseWriter, r *http.Request) {
+func (h *WorkerHandler) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var req protocol.DeployRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
 
-	// 1. 立即返回 OK，不让 Master 等待
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 
-	// 2. 启动协程在后台执行耗时操作 (下载、解压)
 	go func() {
-		// 可选：再次确认上报 deploying (防止 Master 那边没置位)
-		executor.ReportStatus(req.InstanceID, "deploying", 0, 0)
+		h.execMgr.ReportStatus(req.InstanceID, "deploying", 0, 0)
 
-		// 执行下载解压
-		if err := executor.DeployInstance(req); err != nil {
+		if err := h.execMgr.DeployInstance(req); err != nil {
 			log.Printf("[Deploy Error] %v", err)
-			// 失败：上报 error
-			executor.ReportStatus(req.InstanceID, "error", 0, 0)
+			h.execMgr.ReportStatus(req.InstanceID, "error", 0, 0)
 		} else {
 			log.Printf("[Deploy Success] %s", req.InstanceID)
-			// 成功：上报 stopped (表示已就绪，等待启动)
-			executor.ReportStatus(req.InstanceID, "stopped", 0, 0)
+			h.execMgr.ReportStatus(req.InstanceID, "stopped", 0, 0)
 		}
 	}()
 }
 
 // handleInstanceAction 处理实例启停
-func handleInstanceAction(w http.ResponseWriter, r *http.Request) {
+func (h *WorkerHandler) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	var req protocol.InstanceActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
 
-	// 1. 调用 Executor 执行操作
 	var status string
 	var pid int
 	var uptime int64
 	var execErr error
 
-	// 查找实例目录
-	workDir, found := executor.FindInstanceDir(req.InstanceID)
+	workDir, found := h.execMgr.FindInstanceDir(req.InstanceID)
 
-	// 如果是 destroy 操作，即使目录找不到也视为成功
 	if !found && req.Action != "destroy" {
 		execErr = fmt.Errorf("instance dir not found for ID: %s", req.InstanceID)
 	} else {
 		switch req.Action {
 		case "start":
-			// StartProcess 返回的是结构体
-			result := executor.StartProcess(workDir)
+			result := h.execMgr.StartProcess(workDir)
 			status = result.Status
 			pid = result.PID
 			uptime = result.Uptime
 			execErr = result.Error
 		case "stop":
-			// StopProcess 返回 (status, pid, err)
-			status, pid, execErr = executor.StopProcess(workDir)
+			status, pid, execErr = h.execMgr.StopProcess(workDir)
 		case "destroy":
-			// Destroy 直接调用 HandleAction
-			execErr = executor.HandleAction(req)
+			execErr = h.execMgr.HandleAction(req)
 			status = "destroyed"
 			pid = 0
 			uptime = 0
@@ -141,35 +150,12 @@ func handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. 向 Master 报告最新状态
-	report := protocol.InstanceStatusReport{
-		InstanceID: req.InstanceID,
-		Status:     status,
-		PID:        pid,
-		Uptime:     uptime,
-	}
-	reportURL := fmt.Sprintf("%s/api/instance/status_report", masterBaseURL)
-	reportBytes, _ := json.Marshal(report)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(reportURL, "application/json", bytes.NewBuffer(reportBytes))
-
-	if err != nil {
-		log.Printf("Failed to report status (Network Error): %v", err)
-	} else {
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			// 读取 Master 返回的错误详情
-			body, _ := io.ReadAll(resp.Body)
-			log.Printf("Failed to report status (Master Rejected): Code=%d, Body=%s", resp.StatusCode, string(body))
-		}
-	}
-
+	h.execMgr.ReportStatus(req.InstanceID, status, pid, uptime)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleExec 处理 CMD 命令
-func handleExec(w http.ResponseWriter, r *http.Request) {
+func (h *WorkerHandler) handleExec(w http.ResponseWriter, r *http.Request) {
 	var req protocol.CommandRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -196,14 +182,15 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func handleGetLogFiles(w http.ResponseWriter, r *http.Request) {
+// handleGetLogFiles 获取日志列表
+func (h *WorkerHandler) handleGetLogFiles(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("instance_id")
 	if id == "" {
 		http.Error(w, "missing instance_id", 400)
 		return
 	}
 
-	files, err := executor.GetLogFiles(id)
+	files, err := h.execMgr.GetLogFiles(id)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -218,19 +205,16 @@ func handleGetLogFiles(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// [新增] 处理缓存清理请求
-func handleCleanupCache(w http.ResponseWriter, r *http.Request) {
+// handleCleanupCache 清理缓存
+func (h *WorkerHandler) handleCleanupCache(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
 
-	// 解析请求参数
 	var req struct {
-		Retain int `json:"retain"` // 保留数量，默认为 0 (全删)
+		Retain int `json:"retain"`
 	}
-
-	// 允许 Body 为空，此时 Retain 默认为 0
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON", 400)
@@ -238,12 +222,7 @@ func handleCleanupCache(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 参数防御：如果不传或者传负数，默认可能比较危险
-	// 这里我们约定：
-	// n >= 0 : 保留 n 个
-	// 如果用户真的想全删，传 0 即可
-
-	result, err := executor.CleanupPackageCache(req.Retain)
+	result, err := h.execMgr.CleanupPackageCache(req.Retain)
 	if err != nil {
 		log.Printf("[Cleanup] Error: %v", err)
 		http.Error(w, fmt.Sprintf("Cleanup failed: %v", err), 500)
@@ -258,14 +237,14 @@ func handleCleanupCache(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleScanOrphans(w http.ResponseWriter, r *http.Request) {
+// handleScanOrphans 扫描孤儿
+func (h *WorkerHandler) handleScanOrphans(w http.ResponseWriter, r *http.Request) {
 	var req protocol.OrphanScanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", 400)
 		return
 	}
 
-	// 转为 Map 加速查找
 	sysMap := make(map[string]bool)
 	for _, s := range req.ValidSystems {
 		sysMap[s] = true
@@ -275,7 +254,7 @@ func handleScanOrphans(w http.ResponseWriter, r *http.Request) {
 		instMap[i] = true
 	}
 
-	items, err := executor.ScanOrphans(sysMap, instMap)
+	items, err := h.execMgr.ScanOrphans(sysMap, instMap)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -285,14 +264,15 @@ func handleScanOrphans(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(protocol.OrphanScanResponse{Items: items})
 }
 
-func handleDeleteOrphans(w http.ResponseWriter, r *http.Request) {
+// handleDeleteOrphans 删除孤儿
+func (h *WorkerHandler) handleDeleteOrphans(w http.ResponseWriter, r *http.Request) {
 	var req protocol.OrphanDeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", 400)
 		return
 	}
 
-	count, _ := executor.DeleteOrphans(req.Items)
+	count, _ := h.execMgr.DeleteOrphans(req.Items)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]int{"deleted_count": count})
