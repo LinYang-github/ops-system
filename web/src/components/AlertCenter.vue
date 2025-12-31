@@ -161,10 +161,10 @@
     loading.value = true
     try {
       const r1 = await request.get('/api/alerts/rules')
-      rules.value = r1.data || []
+      rules.value = r1 || []
       const r2 = await request.get('/api/alerts/events')
-      activeAlerts.value = r2.data.active || []
-      historyAlerts.value = r2.data.history || []
+      activeAlerts.value = r2.active || []
+      historyAlerts.value = r2.history || []
     } finally {
       loading.value = false
     }
