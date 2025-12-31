@@ -82,8 +82,8 @@ func (c *WorkerClient) connectLoop() {
 		c.Conn = conn
 		log.Printf("✅ WebSocket Connected!")
 
-		// 连接成功后，立即发送一次心跳作为注册包
-		c.sendHeartbeat()
+		// [修改] 连接成功后，发送注册包 (TypeRegister)
+		c.sendPacket(protocol.TypeRegister)
 
 		// 启动子协程
 		// 注意：如果不使用 Context 控制退出，断线重连时旧的协程可能会泄露
@@ -151,7 +151,7 @@ func (c *WorkerClient) heartbeatLoop() {
 			if c.Conn == nil {
 				return
 			}
-			c.sendHeartbeat()
+			c.sendPacket(protocol.TypeHeartbeat)
 
 		case newInterval := <-c.updateTickerChan:
 			// 如果配置变了，重置 Ticker
@@ -161,21 +161,6 @@ func (c *WorkerClient) heartbeatLoop() {
 				ticker.Reset(interval)
 			}
 		}
-	}
-}
-
-func (c *WorkerClient) sendHeartbeat() {
-	info := agent.GetNodeInfo()
-	status := agent.GetStatus()
-	req := protocol.RegisterRequest{Info: info, Status: status}
-
-	wsMsg, _ := protocol.NewWSMessage(protocol.TypeRegister, "", req)
-
-	// 非阻塞发送
-	select {
-	case c.SendChan <- wsMsg:
-	default:
-		// 缓冲区满，可能是断网了，忽略
 	}
 }
 
@@ -519,4 +504,20 @@ func (c *WorkerClient) handleDeleteOrphans(msg protocol.WSMessage) {
 
 	respMsg, _ := protocol.NewWSMessage(protocol.TypeResponse, msg.Id, resp)
 	c.SendChan <- respMsg
+}
+
+// [重构] 统一发送方法
+func (c *WorkerClient) sendPacket(msgType string) {
+	info := agent.GetNodeInfo()
+	status := agent.GetStatus()
+	req := protocol.RegisterRequest{Info: info, Status: status}
+
+	wsMsg, _ := protocol.NewWSMessage(msgType, "", req)
+
+	// 非阻塞发送
+	select {
+	case c.SendChan <- wsMsg:
+	default:
+		// 缓冲区满则忽略
+	}
 }

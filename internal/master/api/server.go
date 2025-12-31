@@ -106,7 +106,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 
 	// 6. [新增] 初始化 Worker Gateway (WebSocket 通信层)
 	// Gateway 依赖 NodeManager 处理心跳
-	workerGateway := transport.NewWorkerGateway(nodeManager, configManager, instManager)
+	workerGateway := transport.NewWorkerGateway(nodeManager, configManager, instManager, sysManager)
 
 	// 7. 尝试加载动态配置 (热更新覆盖)
 	if globalCfg, err := configManager.GetGlobalConfig(); err == nil {
@@ -218,8 +218,6 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 
 // registerRoutes 注册所有路由
 func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, guiHandler http.Handler) {
-	// --- Worker 通信相关 ---
-	mux.HandleFunc("/api/worker/heartbeat", h.HandleHeartbeat) // 保留兼容 HTTP
 
 	// --- Node 相关 ---
 	mux.HandleFunc("/api/nodes", h.ListNodes)

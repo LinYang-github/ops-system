@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"time"
 
@@ -16,53 +15,6 @@ import (
 
 	"github.com/google/uuid"
 )
-
-// HandleHeartbeat 处理 Worker 心跳 (HTTP 兼容接口)
-// 新版架构中，Worker 主要通过 WebSocket 上报心跳，此接口用于兼容或 fallback
-// POST /api/worker/heartbeat
-func (h *ServerHandler) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		response.Error(w, e.New(code.MethodNotAllowed, "Method not allowed", nil))
-		return
-	}
-
-	var req protocol.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, e.New(code.InvalidJSON, "Invalid heartbeat payload", err))
-		return
-	}
-
-	remoteIP := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
-		remoteIP = host
-	}
-	// 如果是本地回环且请求体带了IP，优先使用请求体的IP
-	if (remoteIP == "127.0.0.1" || remoteIP == "::1") && req.Info.IP != "" && req.Info.IP != "127.0.0.1" {
-		remoteIP = req.Info.IP
-	}
-
-	// 1. 更新数据库/缓存
-	h.nodeMgr.HandleHeartbeat(req, remoteIP)
-
-	// 2. 广播给前端
-	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
-
-	// 3. 获取动态配置
-	var hbInterval, monInterval int64 = 5, 3
-	if globalCfg, err := h.configMgr.GetGlobalConfig(); err == nil {
-		hbInterval = int64(globalCfg.Worker.HeartbeatInterval)
-		monInterval = int64(globalCfg.Worker.MonitorInterval)
-	}
-
-	// 4. 返回标准响应
-	resp := protocol.HeartbeatResponse{
-		Code:              200,
-		HeartbeatInterval: hbInterval,
-		MonitorInterval:   monInterval,
-	}
-
-	response.Success(w, resp)
-}
 
 // ListNodes 获取节点列表
 // GET /api/nodes

@@ -11,6 +11,7 @@ import (
 	"ops-system/internal/master/manager"
 	"ops-system/internal/master/ws"
 	"ops-system/pkg/protocol"
+	"ops-system/pkg/utils"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -25,6 +26,7 @@ type WorkerConnection struct {
 	Conn     *websocket.Conn
 	SendChan chan *protocol.WSMessage
 	NodeID   string
+	ClientIP string
 }
 
 // WorkerGateway 管理所有 Worker 连接
@@ -32,6 +34,7 @@ type WorkerGateway struct {
 	nodeMgr *manager.NodeManager
 	cfgMgr  *manager.ConfigManager
 	instMgr *manager.InstanceManager
+	sysMgr  *manager.SystemManager
 
 	// Key: NodeID (UUID), Value: *WorkerConnection
 	conns sync.Map
@@ -43,11 +46,12 @@ type WorkerGateway struct {
 	tunnelSessions sync.Map
 }
 
-func NewWorkerGateway(nm *manager.NodeManager, cm *manager.ConfigManager, im *manager.InstanceManager) *WorkerGateway {
+func NewWorkerGateway(nm *manager.NodeManager, cm *manager.ConfigManager, im *manager.InstanceManager, sm *manager.SystemManager) *WorkerGateway {
 	return &WorkerGateway{
 		nodeMgr: nm,
 		cfgMgr:  cm,
 		instMgr: im,
+		sysMgr:  sm,
 	}
 }
 
@@ -59,9 +63,13 @@ func (g *WorkerGateway) HandleConnection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// [新增] 获取真实 IP (支持 X-Forwarded-For)
+	realIP := utils.GetClientIP(r)
+
 	wc := &WorkerConnection{
 		Conn:     conn,
 		SendChan: make(chan *protocol.WSMessage, 128),
+		ClientIP: realIP, // 绑定 IP
 	}
 
 	go g.writePump(wc)
@@ -96,27 +104,48 @@ func (g *WorkerGateway) readPump(wc *WorkerConnection) {
 		}
 
 		switch msg.Type {
-		case protocol.TypeRegister:
+		case protocol.TypeRegister, protocol.TypeHeartbeat:
 			var req protocol.RegisterRequest
 			if err := json.Unmarshal(msg.Payload, &req); err == nil {
 				nodeID := req.Info.ID
 				if nodeID == "" {
-					return
+					return // 忽略无效包
 				}
-				identifiedID = nodeID
-				wc.NodeID = nodeID
-				g.conns.Store(nodeID, wc)
-				g.nodeMgr.HandleHeartbeat(req, req.Info.IP)
-				ws.BroadcastNodes(g.nodeMgr.GetAllNodes())
-				g.sendGlobalConfig(wc)
-			}
 
+				// 首次识别
+				if identifiedID == "" {
+					identifiedID = nodeID
+					wc.NodeID = nodeID
+					g.conns.Store(nodeID, wc)
+					log.Printf("[Gateway] Worker connected: %s (IP: %s)", nodeID, wc.ClientIP)
+				}
+
+				// [核心] 使用 WebSocket 连接的真实 IP，而不是 Req 中的 IP
+				// 这解决了 Protocol Split-Brain 问题
+				g.nodeMgr.HandleHeartbeat(req, wc.ClientIP)
+
+				ws.BroadcastNodes(g.nodeMgr.GetAllNodes())
+
+				// 仅在 Register 时或定期下发配置?
+				// 简单起见，每次心跳都检查配置有点重，但考虑到心跳间隔几秒一次，性能可控。
+				// 或者只在 TypeRegister 时下发。
+				if msg.Type == protocol.TypeRegister {
+					g.sendGlobalConfig(wc)
+				}
+			}
 		case protocol.TypeStatusReport:
 			var report protocol.InstanceStatusReport
 			if err := json.Unmarshal(msg.Payload, &report); err == nil && g.instMgr != nil {
+				// 1. 更新数据库和内存缓存
 				g.instMgr.UpdateInstanceFullStatus(&report)
-			}
 
+				// 2. [关键修复] 触发 WebSocket 广播
+				// 通知前端刷新界面。ws.BroadcastSystems 内部有节流机制，不会造成广播风暴。
+				if g.sysMgr != nil {
+					data := g.sysMgr.GetFullView(g.instMgr)
+					ws.BroadcastSystems(data)
+				}
+			}
 		case protocol.TypeResponse:
 			// 处理 RPC 响应
 			if ch, ok := g.pendingRequests.Load(msg.Id); ok {
