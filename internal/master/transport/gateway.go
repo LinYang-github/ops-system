@@ -31,16 +31,18 @@ type WorkerConnection struct {
 type WorkerGateway struct {
 	nodeMgr *manager.NodeManager
 	cfgMgr  *manager.ConfigManager
+	instMgr *manager.InstanceManager
 	// Key: NodeIP, Value: Connection
 	conns sync.Map
 	// 终端会话暂存: SessionID -> Channel (传递 Worker 的连接)
 	terminalSessions sync.Map
 }
 
-func NewWorkerGateway(nm *manager.NodeManager, cm *manager.ConfigManager) *WorkerGateway {
+func NewWorkerGateway(nm *manager.NodeManager, cm *manager.ConfigManager, im *manager.InstanceManager) *WorkerGateway {
 	return &WorkerGateway{
 		nodeMgr: nm,
 		cfgMgr:  cm,
+		instMgr: im,
 	}
 }
 
@@ -110,7 +112,19 @@ func (g *WorkerGateway) readPump(wc *WorkerConnection) {
 			}
 		case protocol.TypeResponse:
 			log.Printf("Received response from %s: %s", wc.NodeIP, string(msg.Payload))
+		case protocol.TypeStatusReport: // [新增] 处理实例状态上报
+			var report protocol.InstanceStatusReport
+			if err := json.Unmarshal(msg.Payload, &report); err == nil {
+				// 直接调用 instMgr 更新，无需通过 HTTP 接口
+				if g.instMgr != nil {
+					g.instMgr.UpdateInstanceFullStatus(&report)
+					// 触发前端实时更新广播 (SystemHandler 那边的逻辑)
+					// 由于网关层不方便直接调用 Handler 的私有方法，
+					// 这里我们保持 instMgr 数据的实时性即可
+				}
+			}
 		}
+
 	}
 }
 

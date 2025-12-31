@@ -106,7 +106,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 
 	// 6. [新增] 初始化 Worker Gateway (WebSocket 通信层)
 	// Gateway 依赖 NodeManager 处理心跳
-	workerGateway := transport.NewWorkerGateway(nodeManager, configManager)
+	workerGateway := transport.NewWorkerGateway(nodeManager, configManager, instManager)
 
 	// 7. 尝试加载动态配置 (热更新覆盖)
 	if globalCfg, err := configManager.GetGlobalConfig(); err == nil {
@@ -167,9 +167,20 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	// 11. 启动 WebSocket Hub (用于前端推送)
 	go ws.GlobalHub.Run()
 
+	// 【修复点 1】确保 assets 不为 nil。如果 embed 失败，使用内存文件系统兜底
+	var guiHandler http.Handler
+	if assets == nil {
+		log.Println("⚠️ [Warning] Assets is nil, UI will be disabled")
+		guiHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "UI assets not found", http.StatusNotFound)
+		})
+	} else {
+		guiHandler = http.FileServer(http.FS(assets))
+	}
+
 	// 12. 创建路由器并注册路由
 	mux := http.NewServeMux()
-	registerRoutes(mux, serverHandler, cfg.Storage.UploadDir, assets)
+	registerRoutes(mux, serverHandler, cfg.Storage.UploadDir, guiHandler)
 
 	log.Printf("Master UI & API running on %s", cfg.Server.Port)
 
@@ -177,18 +188,22 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	// 中间件链式组装
 	// =========================================================
 
-	var handler http.Handler = mux
+	// 【修复点 2】正确处理超时时长转换
+	var apiTimeout time.Duration
+	if cfg.Server.APITimeout > 0 {
+		apiTimeout = time.Duration(cfg.Server.APITimeout) * time.Second
+	} else {
+		// 注意：如果已经是 time.Duration 类型，不要再乘以 time.Second
+		apiTimeout = cfg.Logic.HTTPClientTimeout
+	}
 
-	// 包裹鉴权中间件 (Auth)
+	// 【修复点 3】仅在时长有效时包裹中间件
+	var handler http.Handler = mux
 	handler = middleware.AuthMiddleware(cfg.Auth.SecretKey)(handler)
 
-	// 包裹超时中间件 (Timeout)
-	if cfg.Server.APITimeout > 0 {
-		timeoutDuration := time.Duration(cfg.Server.APITimeout) * time.Second
-		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
-	} else if cfg.Logic.HTTPClientTimeout > 0 {
-		timeoutDuration := time.Duration(cfg.Logic.HTTPClientTimeout) * time.Second
-		handler = middleware.TimeoutMiddleware(timeoutDuration)(handler)
+	if apiTimeout > 0 {
+		log.Printf("Final API Timeout set to: %v", apiTimeout)
+		handler = middleware.TimeoutMiddleware(apiTimeout)(handler)
 	}
 
 	server := &http.Server{
@@ -202,10 +217,9 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 }
 
 // registerRoutes 注册所有路由
-func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, assets fs.FS) {
+func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, guiHandler http.Handler) {
 	// --- Worker 通信相关 ---
-	mux.HandleFunc("/api/worker/heartbeat", h.HandleHeartbeat)   // 保留兼容 HTTP
-	mux.HandleFunc("/api/worker/ws", h.gateway.HandleConnection) // [新增] Worker WebSocket 接入点
+	mux.HandleFunc("/api/worker/heartbeat", h.HandleHeartbeat) // 保留兼容 HTTP
 
 	// --- Node 相关 ---
 	mux.HandleFunc("/api/nodes", h.ListNodes)
@@ -228,8 +242,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/deploy", h.DeployInstance)            // 已改为 WS 下发
 	mux.HandleFunc("/api/deploy/external", h.RegisterExternal) // 已改为 WS 下发
 	mux.HandleFunc("/api/instance/action", h.InstanceAction)   // 已改为 WS 下发
-	mux.HandleFunc("/api/instance/status_report", h.WorkerStatusReport)
-	mux.HandleFunc("/api/systems/action", h.SystemAction) // 批量操作
+	mux.HandleFunc("/api/systems/action", h.SystemAction)      // 批量操作
 
 	// --- Package 相关 ---
 	mux.HandleFunc("/api/upload", h.UploadPackage)
@@ -288,13 +301,18 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, ass
 	mux.HandleFunc("/api/maintenance/cleanup_all", h.CleanupAllCache)
 	// --- WebSocket (Frontend) ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
-	// Worker 终端反向接入点
-	mux.HandleFunc("/api/worker/terminal/relay", h.gateway.HandleTerminalRelay)
 	// --- 静态资源 ---
 	// 文件下载
 	fsUploads := http.FileServer(http.Dir(uploadPath))
 	mux.Handle("/download/", http.StripPrefix("/download/", fsUploads))
 
 	// 前端页面
-	mux.Handle("/", http.FileServer(http.FS(assets)))
+	// 【修复点 4】确保路由注册时不出现 nil 指针调用
+	if h.gateway != nil {
+		mux.HandleFunc("/api/worker/ws", h.gateway.HandleConnection)
+		mux.HandleFunc("/api/worker/terminal/relay", h.gateway.HandleTerminalRelay)
+	}
+
+	// 静态资源使用传入的 handler
+	mux.Handle("/", guiHandler)
 }

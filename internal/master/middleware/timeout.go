@@ -53,6 +53,14 @@ func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 				return
 			}
 
+			// 增加延迟回收保护（可选，应对极致高并发）
+			defer func() {
+				if err := recover(); err != nil {
+					log.Printf("🔥 [Panic Recovered] Path: %s, Error: %v", path, err)
+					http.Error(w, "Internal Server Error", 500)
+				}
+			}()
+
 			// 4. (可选) 如果有些耗时的批量操作接口需要更长时间，也可以单独放行
 			// if strings.HasPrefix(path, "/api/systems/action") { ... }
 

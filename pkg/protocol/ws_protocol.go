@@ -4,12 +4,13 @@ import "encoding/json"
 
 // 消息类型枚举
 const (
-	TypeHeartbeat = "heartbeat" // Worker -> Master
-	TypeRegister  = "register"  // Worker -> Master (首包)
-	TypeCommand   = "command"   // Master -> Worker (下发指令)
-	TypeResponse  = "response"  // Worker -> Master (指令执行结果)
-	TypeLog       = "log"       // Worker -> Master (日志流)
-	TypeConfig    = "config"
+	TypeHeartbeat    = "heartbeat" // Worker -> Master
+	TypeRegister     = "register"  // Worker -> Master (首包)
+	TypeCommand      = "command"   // Master -> Worker (下发指令)
+	TypeResponse     = "response"  // Worker -> Master (指令执行结果)
+	TypeLog          = "log"       // Worker -> Master (日志流)
+	TypeConfig       = "config"
+	TypeStatusReport = "status_report"
 )
 
 // WSMessage 统一信封

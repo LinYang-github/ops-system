@@ -1,8 +1,6 @@
 package executor
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,10 +9,15 @@ import (
 
 	"ops-system/pkg/protocol"
 	// 引入公共工具包
-	pkgUtils "ops-system/pkg/utils"
 
 	"github.com/shirou/gopsutil/v3/process"
 )
+
+// 2. 定义一个报告函数的类型
+type ReportFunc func(protocol.InstanceStatusReport)
+
+// 3. 定义全局变量
+var OnStatusReport ReportFunc
 
 // 用于计算 IO 速率的缓存
 type ioStatCache struct {
@@ -155,9 +158,8 @@ func reportStatus(masterBaseURL, instID, status string, pid int, uptime int64, c
 		IoWrite:    ioWrite,
 	}
 
-	url := fmt.Sprintf("%s/api/instance/status_report", masterBaseURL)
-	jsonData, _ := json.Marshal(report)
-
-	// 使用全局 Client 发送
-	pkgUtils.PostJSON(url, jsonData)
+	// 4. 改为调用这个 Hook
+	if OnStatusReport != nil {
+		OnStatusReport(report)
+	}
 }

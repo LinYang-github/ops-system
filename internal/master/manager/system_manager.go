@@ -126,7 +126,12 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 	}
 
 	// 3. 获取所有实例 (调用 InstanceManager)
-	instMap := im.GetAllInstances()
+	var instMap map[string][]*protocol.InstanceInfo
+	if im != nil {
+		instMap = im.GetAllInstances()
+	} else {
+		instMap = make(map[string][]*protocol.InstanceInfo)
+	}
 
 	// 4. 组装
 	var result []protocol.SystemView

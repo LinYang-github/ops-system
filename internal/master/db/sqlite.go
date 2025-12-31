@@ -41,7 +41,17 @@ func initTables(db *sql.DB) {
 			readiness_timeout INTEGER
 		);`,
 		// 实例表
-		`CREATE TABLE IF NOT EXISTS instance_infos (id TEXT PRIMARY KEY, system_id TEXT, node_ip TEXT, service_name TEXT, service_version TEXT, status TEXT, pid INTEGER, uptime INTEGER);`,
+		`CREATE TABLE IF NOT EXISTS instance_infos (
+			id TEXT PRIMARY KEY, 
+			system_id TEXT, 
+			node_id TEXT, 
+			service_name TEXT, 
+			service_version TEXT, 
+			status TEXT, 
+			pid INTEGER, 
+			uptime INTEGER
+		);`,
+
 		// 日志表
 		`CREATE TABLE IF NOT EXISTS sys_op_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, operator TEXT, action TEXT, target_type TEXT, target_name TEXT, detail TEXT, status TEXT, create_time INTEGER);`,
 

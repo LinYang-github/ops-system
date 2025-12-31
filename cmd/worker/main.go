@@ -11,6 +11,7 @@ import (
 	"ops-system/internal/worker/transport" // [新增] 引入 Transport
 	"ops-system/internal/worker/utils"
 	"ops-system/pkg/config"
+	"ops-system/pkg/protocol"
 	pkgUtils "ops-system/pkg/utils"
 
 	"github.com/spf13/pflag"
@@ -82,6 +83,12 @@ func main() {
 	// 5. [核心变更] 启动 WebSocket Client (替代旧的 agent.StartHeartbeat)
 	// 这会建立长连接，并在连接成功后自动发送 Register/Heartbeat 包
 	transport.StartClient(cfg.Connect.MasterURL, cfg.Auth.SecretKey)
+
+	executor.OnStatusReport = func(report protocol.InstanceStatusReport) {
+		if transport.GlobalClient != nil {
+			transport.GlobalClient.SendStatusReport(report)
+		}
+	}
 
 	// 6. 启动本地监控采集 (依然需要，用于定期上报状态)
 	// 注意：Monitor 内部现在是通过 transport 还是 http 上报取决于 executor 的实现

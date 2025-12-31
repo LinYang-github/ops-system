@@ -21,22 +21,19 @@ import (
 
 // sendInstanceCommand 向 Worker 发送实例控制指令 (WebSocket 模式)
 func (h *ServerHandler) sendInstanceCommand(inst *protocol.InstanceInfo, action string) error {
-	// 1. 检查节点是否在线 (使用注入的 nodeMgr)
-	// 虽然 Gateway 内部也会检查连接是否存在，但这里先检查业务状态更稳妥
-	node, exists := h.nodeMgr.GetNode(inst.NodeID)
+	node, exists := h.nodeMgr.GetNode(inst.NodeID) // 这里 inst.NodeID 是 UUID
 	if !exists || node.Status != "online" {
 		return fmt.Errorf("node %s offline", inst.NodeID)
 	}
 
-	// 2. 构造请求
 	workerReq := protocol.InstanceActionRequest{
 		InstanceID: inst.ID,
 		Action:     action,
 	}
 
-	// 3. 通过 WebSocket 网关发送指令
-	// 对应 Worker 端: 接收 TypeCommand -> 解析 InstanceActionRequest -> 执行 HandleAction
-	return h.gateway.SendCommand(inst.NodeID, workerReq)
+	// 关键点：Gateway 的 conns map 目前是用 IP 存的
+	// 所以这里必须传 node.IP 而不是 node.ID
+	return h.gateway.SendCommand(node.IP, workerReq)
 }
 
 // ==========================================
@@ -283,25 +280,6 @@ func (h *ServerHandler) InstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logMgr.RecordLog(utils.GetClientIP(r), req.Action+"_instance", "instance", inst.ServiceName, "ID: "+inst.ID, "success")
-	response.Success(w, nil)
-}
-
-// WorkerStatusReport Worker 状态上报回调
-// POST /api/instance/status_report
-// 注意：虽然架构切换到了 WS，保留此 HTTP 接口可用于兼容，或者作为 Worker->Gateway 转发后的内部处理逻辑
-func (h *ServerHandler) WorkerStatusReport(w http.ResponseWriter, r *http.Request) {
-	var report protocol.InstanceStatusReport
-	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
-		return
-	}
-
-	// 更新状态
-	h.instMgr.UpdateInstanceFullStatus(&report)
-
-	// 触发广播
-	h.broadcastUpdate()
-
 	response.Success(w, nil)
 }
 

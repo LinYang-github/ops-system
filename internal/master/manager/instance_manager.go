@@ -2,6 +2,7 @@ package manager
 
 import (
 	"database/sql"
+	"log"
 	"sync"
 	"time"
 
@@ -55,10 +56,19 @@ func (im *InstanceManager) UpdateInstanceStatus(id, status string, pid int) {
 
 // UpdateInstanceFullStatus 根据 Worker 报告完整更新
 func (im *InstanceManager) UpdateInstanceFullStatus(report *protocol.InstanceStatusReport) {
+	if im == nil || im.db == nil {
+		return
+	}
+
 	// 1. DB 更新状态
 	im.mu.Lock()
-	im.db.Exec(`UPDATE instance_infos SET status=?, pid=?, uptime=? WHERE id=?`, report.Status, report.PID, report.Uptime, report.InstanceID)
+	_, err := im.db.Exec(`UPDATE instance_infos SET status=?, pid=?, uptime=? WHERE id=?`,
+		report.Status, report.PID, report.Uptime, report.InstanceID)
 	im.mu.Unlock()
+
+	if err != nil {
+		log.Printf("[Error] UpdateInstanceFullStatus DB failed: %v", err)
+	}
 
 	// 2. 内存更新监控数据
 	metrics := realTimeMetrics{

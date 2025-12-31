@@ -18,6 +18,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var GlobalClient *WorkerClient
+
 type WorkerClient struct {
 	MasterURL        string
 	Secret           string
@@ -33,7 +35,7 @@ func StartClient(masterURL, secret string) {
 		SendChan:         make(chan *protocol.WSMessage, 64),
 		updateTickerChan: make(chan time.Duration, 1), // 缓冲1
 	}
-
+	GlobalClient = client // [新增] 赋值给全局变量
 	go client.connectLoop()
 }
 
@@ -187,6 +189,9 @@ func (c *WorkerClient) writePump() {
 }
 
 func (c *WorkerClient) handleCommand(msg protocol.WSMessage) {
+	// 增加调试日志，方便观察指令是否到达
+	log.Printf("📥 Received WS Message Type: %s", msg.Type)
+
 	// 1. 通用 Map 解析 (为了灵活性)
 	var rawMap map[string]string
 	if err := json.Unmarshal(msg.Payload, &rawMap); err == nil {
@@ -196,24 +201,24 @@ func (c *WorkerClient) handleCommand(msg protocol.WSMessage) {
 		}
 	}
 
-	// 1. 尝试 InstanceActionRequest (启/停/销毁)
+	// 1. 处理 InstanceActionRequest (启动/停止)
 	var actionReq protocol.InstanceActionRequest
 	if err := json.Unmarshal(msg.Payload, &actionReq); err == nil && actionReq.Action != "" {
-		log.Printf("📥 Received Action: %s %s", actionReq.Action, actionReq.InstanceID)
+		log.Printf("执行实例操作: %s -> %s", actionReq.InstanceID, actionReq.Action)
 		if err := executor.HandleAction(actionReq); err != nil {
-			log.Printf("Action failed: %v", err)
+			log.Printf("操作失败: %v", err)
 		}
 		return
 	}
 
-	// 2. 尝试 DeployRequest (部署)
+	// 2. 处理 DeployRequest (部署)
 	var deployReq protocol.DeployRequest
-	if err := json.Unmarshal(msg.Payload, &deployReq); err == nil && deployReq.ServiceName != "" {
-		log.Printf("📥 Received Deploy: %s", deployReq.ServiceName)
+	if err := json.Unmarshal(msg.Payload, &deployReq); err == nil && deployReq.DownloadURL != "" {
+		log.Printf("开始异步部署: %s", deployReq.ServiceName)
+		// 必须异步，否则会阻塞心跳
 		go func() {
 			executor.ReportStatus(deployReq.InstanceID, "deploying", 0, 0)
 			if err := executor.DeployInstance(deployReq); err != nil {
-				log.Printf("Deploy failed: %v", err)
 				executor.ReportStatus(deployReq.InstanceID, "error", 0, 0)
 			} else {
 				executor.ReportStatus(deployReq.InstanceID, "stopped", 0, 0)
@@ -341,4 +346,20 @@ func (c *WorkerClient) startReverseTerminal(serverHost, sessionID string) {
 
 	<-errChan
 	log.Println("Terminal session ended")
+}
+
+// [新增] 供外部模块调用的发送方法
+func (c *WorkerClient) SendStatusReport(report protocol.InstanceStatusReport) {
+	if c == nil || c.Conn == nil {
+		return
+	}
+	// 封装为 WSMessage
+	msg, _ := protocol.NewWSMessage(protocol.TypeStatusReport, "", report)
+
+	// 非阻塞发送
+	select {
+	case c.SendChan <- msg:
+	default:
+		// 缓冲区满则丢弃，监控数据允许少量丢失
+	}
 }

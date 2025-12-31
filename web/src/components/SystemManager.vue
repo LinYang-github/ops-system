@@ -396,7 +396,6 @@ chevron_right
           <el-input v-model="adoptForm.name" placeholder="例如: 遗留网关" />
         </el-form-item>
         <el-form-item label="所在节点">
-           <!-- 【修改】v-model 绑定 nodeID, :value 使用 n.id -->
            <el-select v-model="adoptForm.nodeID" placeholder="选择目标服务器" style="width:100%">
              <el-option 
                v-for="n in availableNodes" 
