@@ -147,7 +147,7 @@ chevron_right
             <el-table-column v-if="colConf.ip" label="节点 IP" width="140">
               <template #default="scope">
                 <span v-if="scope.row.rowType === 'instance'" class="mono-text text-primary">
-                  {{ getNodeIP(scope.row.node_ip) }}
+                  {{ getNodeIP(scope.row.node_id) }}
                 </span>
               </template>
             </el-table-column>
@@ -852,7 +852,7 @@ const handleInstanceCommand = (cmd, id) => {
 // 修复 openLog: 使用 getNodeIP 显示真实 IP
 const openLog = (row) => { 
   logDialog.instId = row.id
-  logDialog.instName = `${row.service_name}(${getNodeIP(row.node_ip)})`
+  logDialog.instName = `${row.service_name}(${getNodeIP(row.node_id)})`
   logDialog.visible = true 
 }
 

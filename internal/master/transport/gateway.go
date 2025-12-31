@@ -120,9 +120,17 @@ func (g *WorkerGateway) readPump(wc *WorkerConnection) {
 					log.Printf("[Gateway] Worker connected: %s (IP: %s)", nodeID, wc.ClientIP)
 				}
 
-				// [核心] 使用 WebSocket 连接的真实 IP，而不是 Req 中的 IP
-				// 这解决了 Protocol Split-Brain 问题
-				g.nodeMgr.HandleHeartbeat(req, wc.ClientIP)
+				// 确定入库显示的 IP
+				displayIP := wc.ClientIP
+
+				// 【修复】当 Master/Worker 同机时，ClientIP 是 127.0.0.1
+				// 此时优先使用 Worker 上报的 Info.IP (局域网 IP)，以便在前端展示更友好
+				if (displayIP == "127.0.0.1" || displayIP == "::1") && req.Info.IP != "" && req.Info.IP != "127.0.0.1" {
+					displayIP = req.Info.IP
+				}
+
+				// 处理心跳更新 (更新 DB 和 Cache)
+				g.nodeMgr.HandleHeartbeat(req, displayIP)
 
 				ws.BroadcastNodes(g.nodeMgr.GetAllNodes())
 
