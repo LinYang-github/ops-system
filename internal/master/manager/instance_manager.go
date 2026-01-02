@@ -2,6 +2,7 @@ package manager
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -63,33 +64,42 @@ func (im *InstanceManager) UpdateInstanceFullStatus(report *protocol.InstanceSta
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
-	// 1. 尝试更新现有记录
-	// 我们只更新运行状态字段，不覆盖 SystemID/NodeID 等静态字段（除非是插入）
+	// 1. 尝试更新
 	res, err := im.db.Exec(`UPDATE instance_infos SET status=?, pid=?, uptime=? WHERE id=?`,
 		report.Status, report.PID, report.Uptime, report.InstanceID)
 
 	if err != nil {
-		log.Printf("[Error] UpdateInstance status failed: %v", err)
-		// 如果 DB 报错（如锁死），不应继续更新缓存，直接返回
 		return
 	}
 
-	// 2. 检查更新结果
 	rows, _ := res.RowsAffected()
 
-	// 3. [核心自愈逻辑] 如果影响行数为 0，说明是“幽灵实例” (DB中不存在)，执行自动补录
+	// 2. [自愈逻辑] 如果更新行数为 0，说明是幽灵实例
 	if rows == 0 {
-		// 只有当上报数据中包含必要的元数据时才执行插入
-		// 防止旧版本 Worker 发送的不完整数据污染数据库
 		if report.SystemID != "" && report.NodeID != "" {
-			log.Printf("[AutoDiscovery] Found ghost instance, registering: %s (Sys: %s, Node: %s)",
-				report.InstanceID, report.SystemID, report.NodeID)
+			// =======================================================
+			// [新增] 2.1 检查父级 System 是否存在，不存在则自动创建
+			// =======================================================
+			var sysCount int
+			err := im.db.QueryRow("SELECT COUNT(1) FROM system_infos WHERE id = ?", report.SystemID).Scan(&sysCount)
+			if err == nil && sysCount == 0 {
+				// 自动恢复 System
+				// 由于丢失了原始 Name，这里暂时用 ID 或 ServiceName 作为名称，用户后续可重命名
+				recoverName := fmt.Sprintf("Recovered (%s)", report.ServiceName)
+				log.Printf("[AutoDiscovery] Recovering missing System: %s", report.SystemID)
+
+				im.db.Exec(`INSERT INTO system_infos (id, name, description, create_time) VALUES (?, ?, ?, ?)`,
+					report.SystemID, recoverName, "Auto recovered from worker report", time.Now().Unix())
+			}
+			// =======================================================
+
+			log.Printf("[AutoDiscovery] Registering ghost instance: %s", report.InstanceID)
 
 			insertSQL := `INSERT INTO instance_infos (
 				id, system_id, node_id, service_name, service_version, status, pid, uptime
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
-			_, insertErr := im.db.Exec(insertSQL,
+			im.db.Exec(insertSQL,
 				report.InstanceID,
 				report.SystemID,
 				report.NodeID,
@@ -99,22 +109,16 @@ func (im *InstanceManager) UpdateInstanceFullStatus(report *protocol.InstanceSta
 				report.PID,
 				report.Uptime,
 			)
-
-			if insertErr != nil {
-				log.Printf("[Error] Failed to auto-register instance %s: %v", report.InstanceID, insertErr)
-			}
 		}
 	}
 
-	// 4. 更新内存中的实时监控数据 (Metrics)
-	// 无论数据库操作是 Update 还是 Insert，内存监控数据都必须刷新
+	// 3. 更新内存 Metrics
 	metrics := realTimeMetrics{
 		CpuUsage: report.CpuUsage,
 		MemUsage: report.MemUsage,
 		IoRead:   report.IoRead,
 		IoWrite:  report.IoWrite,
 	}
-
 	im.metricsCache.Store(report.InstanceID, metrics)
 }
 

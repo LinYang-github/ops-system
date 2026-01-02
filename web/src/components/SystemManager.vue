@@ -1,19 +1,3 @@
-
-Model
-ThinkingThoughts
-Expand to view model thoughts
-
-chevron_right
-这是一个非常重要的补全。纳管服务（External Register）同样需要适配 NodeID 架构，否则后端无法根据 IP 准确找到节点（特别是当 IP 发生变动时）。
-
-以下是 **修复后完整、未省略** 的 `SystemManager.vue`。
-
-**主要修改点：**
-1.  **纳管弹窗表单 (`adoptForm`)**：将绑定的字段从 `nodeIP` 改为 `nodeID`。
-2.  **节点选择下拉框**：`:value` 绑定为 `n.id`。
-3.  **提交逻辑 (`registerExternal`)**：向后端发送 `node_id`，不再依赖 `node_ip`。
-
-```vue
 <template>
   <div class="view-container">
     
@@ -143,7 +127,7 @@ chevron_right
               </template>
             </el-table-column>
 
-            <!-- 列 2: 节点 IP (已修改：调用 getNodeIP) -->
+            <!-- 列 2: 节点 IP -->
             <el-table-column v-if="colConf.ip" label="节点 IP" width="140">
               <template #default="scope">
                 <span v-if="scope.row.rowType === 'instance'" class="mono-text text-primary">
@@ -389,7 +373,7 @@ chevron_right
       </template>
     </el-dialog>
 
-    <!-- 弹窗 3: 纳管外部服务 (已修复适配 NodeID) -->
+    <!-- 弹窗 3: 纳管外部服务 -->
     <el-dialog v-model="adoptDialog.visible" title="纳管外部服务" width="500px">
       <el-form label-width="100px" size="small" :model="adoptForm">
         <el-form-item label="服务名称">
@@ -468,12 +452,12 @@ chevron_right
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   Plus, MoreFilled, More, Link, VideoPlay, VideoPause, Loading, 
-  Document, Download, Setting 
+  Document, Download 
 } from '@element-plus/icons-vue'
 import { wsStore } from '../store/wsStore' // 引入 WebSocket Store
 import LogViewer from './LogViewer.vue'
@@ -496,10 +480,9 @@ const emit = defineEmits(['refresh-systems'])
 // 2. 状态定义 (State)
 // ==========================================
 
-const currentSystem = ref(null)
+// [修改] 移除 fullData ref，不再从 HTTP 获取全量数据
 const loading = ref(false)
 const batchLoading = ref(false)
-const fullData = ref([])
 const packages = ref([])
 
 // 弹窗状态
@@ -511,7 +494,6 @@ const deployDialog = reactive({
   visible: false, targetModule: null, nodeID: '', serviceName: '', version: '', loading: false 
 })
 const adoptDialog = reactive({ visible: false, loading: false })
-// 【修改】adoptForm 使用 nodeID
 const adoptForm = reactive({ 
   name: '', nodeID: '', workDir: '', startCmd: '', stopCmd: '', pidStrategy: 'spawn', processName: '' 
 })
@@ -540,12 +522,18 @@ const availableNodes = computed(() => {
   return wsStore.nodes.filter(n => n.status === 'online')
 })
 
-let timer = null
-
 // ==========================================
-// 3. 核心计算属性：树形数据 (Tree Data)
+// 3. 核心计算属性 (Computed)
 // ==========================================
 
+// [关键修改] currentSystem 改为计算属性，响应 wsStore 的变化
+const currentSystem = computed(() => {
+  if (!props.targetSystemId) return null
+  // 从 Store 中查找
+  return wsStore.systems.find(s => s.id == props.targetSystemId) || null
+})
+
+// 树形数据 (Tree Data)
 const treeData = computed(() => {
   if (!currentSystem.value) return []
   
@@ -594,46 +582,22 @@ const treeData = computed(() => {
 })
 
 // ==========================================
-// 4. 数据获取与监听 (Data Fetching)
+// 4. 交互操作 (Interactions)
 // ==========================================
 
-// 监听 Prop 变化，自动刷新
-watch(() => props.targetSystemId, (newId) => {
-  if (newId) {
-    refreshData()
-  } else {
-    currentSystem.value = null
-  }
-})
-
+// [修改] 手动刷新逻辑
 const refreshData = async () => {
-  if (!props.targetSystemId) {
-    currentSystem.value = null
-    return
-  }
-  
   loading.value = true
   try {
     const res = await request.get('/api/systems')
-    fullData.value = res || []
-    
-    // 使用宽松比较 (==) 兼容 String/Number ID
-    const found = fullData.value.find(s => s.id == props.targetSystemId)
-    currentSystem.value = found || null
-    
-    if (!found) {
-      console.warn("System not found in list:", props.targetSystemId)
-    }
+    wsStore.systems = res || [] // 主动更新 Store
+    ElMessage.success('数据已刷新')
   } catch (e) {
-    console.error("Refresh failed:", e)
+    // ...
   } finally {
     loading.value = false
   }
 }
-
-// ==========================================
-// 5. 交互操作 (Interactions)
-// ==========================================
 
 // --- 批量操作 ---
 const handleBatchAction = async (action) => {
@@ -663,7 +627,7 @@ const handleBatchAction = async (action) => {
       action 
     })
     ElMessage.success('批量指令已下发')
-    setTimeout(refreshData, 1500)
+    // WS 会自动推送状态变更，不需要 setTimeout refreshData
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('操作失败')
   } finally {
@@ -686,7 +650,10 @@ const handleDeleteSystem = async () => {
     )
     await request.post('/api/systems/delete', { id: currentSystem.value.id })
     ElMessage.success('已删除')
-    emit('refresh-systems') // 通知父组件刷新列表
+    
+    // 手动刷新一次列表，并通知父组件导航
+    await refreshData()
+    emit('refresh-systems') 
   } catch(e) { /* ignore cancel */ }
 }
 
@@ -708,7 +675,7 @@ const confirmExport = async () => {
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
-    window.URL.revokeObjectURL(url) // 释放资源
+    window.URL.revokeObjectURL(url) 
     exportDialog.visible = false
     ElMessage.success("导出请求已发送")
   } catch(e) {
@@ -721,6 +688,7 @@ const confirmExport = async () => {
 // --- 组件管理 (Add/Delete Module) ---
 const openAddModuleDialog = async () => { 
   addModDialog.visible = true
+  // 这里仍然需要请求，因为 packages 列表不在 store 里
   const res = await request.get('/api/packages')
   packages.value = res || []
 }
@@ -747,7 +715,8 @@ const addModule = async () => {
       readiness_timeout: 30
     })
     addModDialog.visible = false
-    refreshData()
+    // 刷新数据以显示新 Module (Master AddModule 接口应触发广播)
+    refreshData() 
     ElMessage.success('组件添加成功')
   } catch(e) { /* interceptor handles error */ }
 }
@@ -773,19 +742,17 @@ const deployInstance = async () => {
   if (!deployDialog.nodeID) return ElMessage.warning('请选择目标节点')
   deployDialog.loading = true
   try {
-    // 构造请求，兼容后端 NodeID 逻辑
     const payload = {
       system_id: currentSystem.value.id,
       service_name: deployDialog.targetModule.package_name,
       service_version: deployDialog.targetModule.package_version,
       node_id: deployDialog.nodeID
     }
-    
     await request.post('/api/deploy', payload)
     
     deployDialog.visible = false
     ElMessage.success('部署指令已下发')
-    setTimeout(refreshData, 1500)
+    // 不再需要 setTimeout，WS 会推送 'deploying' 状态
   } catch(e) { 
     ElMessage.error('部署失败: ' + (e.message || e)) 
   } finally { 
@@ -796,18 +763,15 @@ const deployInstance = async () => {
 // --- 纳管服务 (Adopt) ---
 const openAdoptDialog = () => { 
   adoptDialog.visible = true
-  // 重置表单，注意 reset nodeID
   Object.assign(adoptForm, { name: '', nodeID: '', workDir: '', startCmd: '', stopCmd: '', pidStrategy: 'spawn', processName: '' })
 }
 
 const registerExternal = async () => {
-  // 【修改】校验 nodeID
   if (!adoptForm.name || !adoptForm.nodeID || !adoptForm.startCmd) {
     return ElMessage.warning('请补全必填信息')
   }
   adoptDialog.loading = true
   try {
-    // 【修改】传递 node_id
     await request.post('/api/deploy/external', { 
       system_id: currentSystem.value.id, 
       node_id: adoptForm.nodeID,
@@ -821,7 +785,6 @@ const registerExternal = async () => {
       }
     })
     adoptDialog.visible = false
-    refreshData()
     ElMessage.success('纳管成功')
   } catch(e) { 
     ElMessage.error('纳管失败: ' + (e.message || e)) 
@@ -835,7 +798,6 @@ const handleAction = async (id, action) => {
   try {
     await request.post('/api/instance/action', { instance_id: id, action })
     ElMessage.success('指令已发送')
-    if (action === 'destroy') setTimeout(refreshData, 500)
   } catch(e) {
     ElMessage.error('操作失败: ' + e.message)
   }
@@ -848,7 +810,6 @@ const handleInstanceCommand = (cmd, id) => {
   }
 }
 
-// 修复 openLog: 使用 getNodeIP 显示真实 IP
 const openLog = (row) => { 
   logDialog.instId = row.id
   logDialog.instName = `${row.service_name}(${getNodeIP(row.node_id)})`
@@ -865,12 +826,10 @@ const formatTime = (ts) => {
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// 核心：将 NodeID 转换为 IP 用于显示
 const getNodeIP = (id) => {
   if (!id) return '-'
   const node = wsStore.nodes.find(n => n.id === id)
   if (node) return node.ip
-  // 如果找不到，返回原 ID（可能是旧数据或节点已离线）
   return id
 }
 
@@ -879,16 +838,12 @@ const getNodeIP = (id) => {
 // ==========================================
 
 onMounted(() => {
-  if (props.targetSystemId) {
+  // 初次加载时，尝试获取一次数据，以防 Store 为空
+  if (wsStore.systems.length === 0) {
     refreshData()
   }
-  // 启动定时刷新 (3秒一次)
-  timer = setInterval(refreshData, 3000)
 })
-
-onUnmounted(() => {
-  if (timer) clearInterval(timer)
-})
+// [修改] 移除 onUnmounted 和 timer 清理
 </script>
 
 <style scoped>
@@ -952,7 +907,6 @@ onUnmounted(() => {
   background: transparent;
 }
 
-/* 覆盖 Card Body 样式 */
 .table-card :deep(.el-card__body) {
   flex: 1;
   display: flex;
@@ -961,7 +915,6 @@ onUnmounted(() => {
   padding: 0; 
 }
 
-/* 样式修复：移除表格内边框，调整内边距 */
 :deep(.custom-table .el-table__inner-wrapper::before) { display: none; }
 :deep(.custom-table .el-table__cell) { padding: 6px 0; }
 
