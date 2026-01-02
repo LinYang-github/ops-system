@@ -167,6 +167,10 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	// 11. 启动 WebSocket Hub (用于前端推送)
 	go ws.GlobalHub.Run()
 
+	if nodes := nodeManager.GetAllNodes(); len(nodes) > 0 {
+		ws.BroadcastNodes(nodes)
+	}
+
 	// 【修复点 1】确保 assets 不为 nil。如果 embed 失败，使用内存文件系统兜底
 	var guiHandler http.Handler
 	if assets == nil {
