@@ -319,10 +319,14 @@ func (m *Manager) StartProcess(workDir string) StartProcessResult {
 		return StartProcessResult{Status: "error", Error: err}
 	}
 
-	// 2. 检查运行状态 (防止重复启动)
-	if isRunning(workDir) {
+	// 2. 检查运行状态
+	// [修改] 这里的 isRunning 现在需要更严格，如果残留 PID 文件但进程不在，应该视为未运行
+	if m.strictIsRunning(workDir) { // 替换原来的 isRunning
 		pid := getPID(workDir)
 		return StartProcessResult{Status: "running", PID: pid, Uptime: time.Now().Unix(), Error: nil}
+	} else {
+		// [新增] 确保清理残留，防止 Start 失败后 PID 文件还在
+		os.Remove(filepath.Join(workDir, "pid"))
 	}
 
 	// 3. 路径与环境准备
@@ -645,4 +649,22 @@ func findProcessPID(nameKeyword string, workDir string) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("process not found")
+}
+
+// strictIsRunning 严格检查运行状态
+func (m *Manager) strictIsRunning(workDir string) bool {
+	pidPath := filepath.Join(workDir, "pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false
+	}
+	pid, _ := strconv.Atoi(string(data))
+
+	proc, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return false
+	}
+
+	// 复用 validator 的逻辑 (如果找不到 exeName 传空，只校验 CWD)
+	return m.validateProcessIdentity(proc, workDir, "")
 }
