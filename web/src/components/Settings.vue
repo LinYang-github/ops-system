@@ -97,19 +97,6 @@
               <div class="maintenance-panel">
                 <div class="section-title">存储空间清理</div>
                 
-                <el-alert
-                  title="功能说明"
-                  type="info"
-                  :closable="false"
-                  show-icon
-                  class="mb-20"
-                >
-                  <template #default>
-                    此操作将向集群内所有<b>在线节点</b>下发清理指令，删除 `instances/pkg_cache/` 目录下的服务包文件。
-                    <br/>建议在磁盘空间不足或大版本更新后执行。
-                  </template>
-                </el-alert>
-
                 <div class="action-row">
                   <div class="label-group">
                     <span class="main-label">清理节点下载缓存</span>
