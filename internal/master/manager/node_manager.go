@@ -43,11 +43,23 @@ func NewNodeManager(db *sql.DB, tsdb *monitor.MemoryTSDB, offlineThreshold time.
 
 // loadFromDB 从数据库预热缓存
 func (nm *NodeManager) loadFromDB() {
+	// 【修改点】：增加 COALESCE 处理 NULL 值
+	// 1. COALESCE(ip, id): 如果 ip 为空，使用 id (因为手动添加时 id 就是 IP)
+	// 2. COALESCE(os, 'Unknown'): 防止 os 为空导致 Scan 失败
 	query := `
 		SELECT 
-			id, ip, port, hostname, name, COALESCE(mac_addr, ''), os, COALESCE(arch, ''), 
-			COALESCE(cpu_cores, 0), COALESCE(mem_total, 0), COALESCE(disk_total, 0),
-			status, last_heartbeat
+			id, 
+			COALESCE(ip, id) as ip, 
+			hostname, 
+			name, 
+			COALESCE(mac_addr, ''), 
+			COALESCE(os, 'Unknown'), 
+			COALESCE(arch, ''), 
+			COALESCE(cpu_cores, 0), 
+			COALESCE(mem_total, 0), 
+			COALESCE(disk_total, 0),
+			status, 
+			last_heartbeat
 		FROM node_infos
 	`
 	rows, err := nm.db.Query(query)
@@ -60,12 +72,19 @@ func (nm *NodeManager) loadFromDB() {
 	count := 0
 	for rows.Next() {
 		var n protocol.NodeInfo
-		rows.Scan(
+		// Scan 顺序保持不变
+		err := rows.Scan(
 			&n.ID, &n.IP, &n.Hostname, &n.Name, &n.MacAddr, &n.OS, &n.Arch,
 			&n.CPUCores, &n.MemTotal, &n.DiskTotal,
 			&n.Status, &n.LastHeartbeat,
 		)
-		// 存入缓存，使用 ID 作为 Key
+
+		if err != nil {
+			// 增加具体的错误日志，方便排查是哪个字段出的问题
+			log.Printf("[NodeManager] Scan row failed (ID might be valid): %v", err)
+			continue
+		}
+
 		nm.nodeCache.Store(n.ID, n)
 		count++
 	}
@@ -262,15 +281,17 @@ func (nm *NodeManager) GetAllNodesMetrics() map[string]protocol.NodeInfo {
 // --- 以下 CRUD 操作需要同时更新 DB 和 缓存 ---
 
 func (nm *NodeManager) AddPlannedNode(id, name string) error {
-	// 1. 写 DB
-	_, err := nm.db.Exec(`INSERT INTO node_infos (id, name, status, hostname, last_heartbeat) VALUES (?, ?, 'planned', '待接入', 0)`, id, name)
+	// 【修改点】：同时插入 ip 字段 (值等于 id)
+	query := `INSERT INTO node_infos (id, ip, name, status, hostname, last_heartbeat) VALUES (?, ?, ?, 'planned', '待接入', 0)`
+
+	_, err := nm.db.Exec(query, id, id, name) // id 传两次，分别给 id 和 ip
 	if err != nil {
 		return err
 	}
 
 	// 2. 写缓存
 	nm.nodeCache.Store(id, protocol.NodeInfo{
-		ID: id, Name: name, Status: "planned", Hostname: "待接入",
+		ID: id, IP: id, Name: name, Status: "planned", Hostname: "待接入",
 	})
 	return nil
 }
