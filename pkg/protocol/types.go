@@ -359,3 +359,10 @@ type WakeOnLanRequest struct {
 	TargetMAC string `json:"target_mac"` // 目标机器 MAC 地址
 	TargetIP  string `json:"target_ip"`  // 目标机器 IP (用于广播地址计算，可选，默认 255.255.255.255)
 }
+
+// WorkerUpgradeRequest 升级请求
+type WorkerUpgradeRequest struct {
+	DownloadURL string `json:"download_url"` // 新版二进制下载地址
+	Checksum    string `json:"checksum"`     // MD5 或 SHA256 校验和 (推荐 SHA256)
+	Version     string `json:"version"`      // 目标版本号 (用于日志)
+}

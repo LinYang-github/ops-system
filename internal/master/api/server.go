@@ -162,6 +162,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		sched,
 		workerGateway,      // [新增] 注入 Gateway
 		cfg.Auth.SecretKey, // 传入 Secret 用于登录接口
+		cfg.Storage.UploadDir,
 	)
 
 	// 11. 启动 WebSocket Hub (用于前端推送)
@@ -232,6 +233,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, gui
 	mux.HandleFunc("/api/ctrl/cmd", h.TriggerCmd)              // 已改为 WS 下发
 	mux.HandleFunc("/api/node/terminal", h.HandleNodeTerminal) // 暂依赖直连 IP
 	mux.HandleFunc("/api/nodes/wake", h.WakeNode)
+	mux.HandleFunc("/api/nodes/upgrade", h.UpgradeNode)
 
 	// --- System 配置相关 ---
 	mux.HandleFunc("/api/systems", h.GetSystems)
@@ -306,6 +308,10 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, gui
 	mux.HandleFunc("/api/maintenance/cleanup_all_cache", h.CleanupNodeCaches) // 对应 executeClean
 	mux.HandleFunc("/api/maintenance/scan_orphans", h.ScanNodeOrphans)        // 对应 openGcDialog (POST)
 	mux.HandleFunc("/api/maintenance/delete_orphans", h.DeleteNodeOrphans)    // 对应 executeDelete
+	mux.HandleFunc("/api/maintenance/upgrade_workers", h.BatchUpgradeWorkers)
+	mux.HandleFunc("/api/maintenance/artifacts", h.ListSystemArtifacts)
+	mux.HandleFunc("/api/maintenance/artifacts/upload", h.UploadSystemArtifact)
+
 	// --- WebSocket (Frontend) ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)
 	// --- 静态资源 ---

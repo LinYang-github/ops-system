@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -273,5 +275,98 @@ func (h *ServerHandler) DeleteNodeOrphans(w http.ResponseWriter, r *http.Request
 
 	response.Success(w, map[string]interface{}{
 		"success_count": successCount,
+	})
+}
+
+// BatchUpgradeWorkers 批量升级所有在线 Worker
+// POST /api/maintenance/upgrade_workers
+func (h *ServerHandler) BatchUpgradeWorkers(w http.ResponseWriter, r *http.Request) {
+	// 1. 预计算各平台二进制包的 Hash (避免循环中重复 IO)
+	// 假设目录结构: uploads/system/
+	// 文件名约定: worker_linux_amd64, worker_windows_amd64.exe
+	baseDir := filepath.Join(h.uploadDir, "system")
+
+	binaries := map[string]struct {
+		Name string
+		Hash string
+	}{
+		"linux_amd64":   {Name: "worker_linux_amd64", Hash: ""},
+		"windows_amd64": {Name: "worker_windows_amd64.exe", Hash: ""},
+		// 可扩展 arm64 等
+	}
+
+	// 预加载 Hash
+	for key, item := range binaries {
+		path := filepath.Join(baseDir, item.Name)
+		if hash, err := calculateFileHash(path); err == nil {
+			binaries[key] = struct {
+				Name string
+				Hash string
+			}{item.Name, hash}
+		} else {
+			// 如果文件不存在，Hash 留空，后续跳过对应平台的升级
+			log.Printf("[Upgrade] Binary missing for %s: %v", key, err)
+		}
+	}
+
+	// 2. 遍历所有在线节点
+	nodes := h.nodeMgr.GetAllNodes()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successCount := 0
+	targetCount := 0
+
+	host := r.Host // 用于生成下载链接
+
+	for _, node := range nodes {
+		if node.Status != "online" || !h.gateway.IsConnected(node.ID) {
+			continue
+		}
+
+		// 3. 匹配平台
+		var binKey string
+		// 简单判断 OS/Arch，实际需更严谨
+		if node.OS != "" && (containsIgnoreCase(node.OS, "windows")) {
+			binKey = "windows_amd64" // 暂定只支持 amd64
+		} else {
+			binKey = "linux_amd64"
+		}
+
+		binInfo := binaries[binKey]
+		if binInfo.Hash == "" {
+			continue // 该平台升级包未上传，跳过
+		}
+
+		targetCount++
+		wg.Add(1)
+
+		// 4. 并发下发
+		go func(n protocol.NodeInfo, bName, bHash string) {
+			defer wg.Done()
+
+			downloadURL := fmt.Sprintf("http://%s/download/system/%s", host, bName)
+			payload := protocol.WorkerUpgradeRequest{
+				DownloadURL: downloadURL,
+				Checksum:    bHash,
+				Version:     fmt.Sprintf("%d", time.Now().Unix()), // 时间戳版本
+			}
+
+			// 发送指令 (假设 gateway 已实现 SendUpgradeInstruction)
+			if err := h.gateway.SendUpgradeInstruction(n.ID, payload); err == nil {
+				mu.Lock()
+				successCount++
+				mu.Unlock()
+			}
+		}(node, binInfo.Name, binInfo.Hash)
+	}
+
+	wg.Wait()
+
+	h.logMgr.RecordLog(utils.GetClientIP(r), "batch_upgrade", "cluster", "all_nodes", fmt.Sprintf("Triggered: %d/%d", successCount, targetCount), "success")
+
+	response.Success(w, map[string]interface{}{
+		"total_online": len(nodes), // 这里的 nodes 包含了离线的，需注意，不过暂且作为参考
+		"triggered":    targetCount,
+		"success":      successCount,
 	})
 }

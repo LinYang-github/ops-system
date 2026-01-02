@@ -379,3 +379,21 @@ func (g *WorkerGateway) SendWakeInstruction(nodeID string, payload protocol.Wake
 		return fmt.Errorf("send buffer full")
 	}
 }
+
+// SendUpgradeInstruction 发送升级指令
+func (g *WorkerGateway) SendUpgradeInstruction(nodeID string, payload protocol.WorkerUpgradeRequest) error {
+	val, ok := g.conns.Load(nodeID)
+	if !ok {
+		return fmt.Errorf("worker offline")
+	}
+	wc := val.(*WorkerConnection)
+
+	msg, _ := protocol.NewWSMessage(protocol.TypeWorkerUpgrade, "", payload)
+
+	select {
+	case wc.SendChan <- msg:
+		return nil
+	default:
+		return fmt.Errorf("send buffer full")
+	}
+}

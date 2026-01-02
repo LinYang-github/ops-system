@@ -6,13 +6,16 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"ops-system/internal/worker/agent"
 	"ops-system/internal/worker/executor"
 	"ops-system/internal/worker/handler"
+	"ops-system/internal/worker/utils"
+
 	"ops-system/pkg/protocol"
-	"ops-system/pkg/utils"
+	pkgUtils "ops-system/pkg/utils"
 
 	"github.com/gorilla/websocket"
 )
@@ -139,6 +142,8 @@ func (c *WorkerClient) readLoop() {
 			c.handleDeleteOrphans(msg)
 		case protocol.TypeWakeOnLan:
 			c.handleWakeOnLan(msg)
+		case protocol.TypeWorkerUpgrade:
+			c.handleWorkerUpgrade(msg)
 		}
 	}
 }
@@ -426,9 +431,33 @@ func (c *WorkerClient) handleWakeOnLan(msg protocol.WSMessage) {
 	}
 
 	log.Printf("⚡ [WoL] Broadcasting Magic Packet to MAC: %s", req.TargetMAC)
-	if err := utils.SendMagicPacket(req.TargetMAC); err != nil {
+	if err := pkgUtils.SendMagicPacket(req.TargetMAC); err != nil {
 		log.Printf("❌ [WoL] Failed: %v", err)
 	} else {
 		log.Printf("✅ [WoL] Packet sent.")
 	}
+}
+
+func (c *WorkerClient) handleWorkerUpgrade(msg protocol.WSMessage) {
+	var req protocol.WorkerUpgradeRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		c.sendErrorResponse(msg.Id, "invalid upgrade payload")
+		return
+	}
+
+	log.Printf("🚀 收到升级指令: Version=%s URL=%s", req.Version, req.DownloadURL)
+
+	// 异步执行，避免阻塞心跳
+	go func() {
+		// 1. 发送开始响应
+		c.execMgr.ReportStatus("worker_agent", "upgrading", os.Getpid(), 0)
+
+		// 2. 执行升级
+		err := utils.PerformSelfUpgrade(req.DownloadURL, req.Checksum)
+		if err != nil {
+			log.Printf("❌ 升级失败: %v", err)
+			// 恢复状态上报
+			c.execMgr.ReportStatus("worker_agent", "upgrade_failed", os.Getpid(), 0)
+		}
+	}()
 }

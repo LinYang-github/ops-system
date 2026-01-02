@@ -23,6 +23,7 @@ type ServerHandler struct {
 	scheduler    *scheduler.Scheduler
 	gateway      *transport.WorkerGateway
 	secretKey    string
+	uploadDir    string
 }
 
 // NewServerHandler 构造函数
@@ -40,6 +41,7 @@ func NewServerHandler(
 	scheduler *scheduler.Scheduler,
 	gateway *transport.WorkerGateway,
 	secretKey string,
+	uploadDir string,
 ) *ServerHandler {
 	return &ServerHandler{
 		sysMgr:       sys,
@@ -55,5 +57,6 @@ func NewServerHandler(
 		scheduler:    scheduler,
 		gateway:      gateway,
 		secretKey:    secretKey,
+		uploadDir:    uploadDir,
 	}
 }

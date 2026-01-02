@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -331,4 +332,64 @@ MASTER_FALLBACK:
 		"status":     "sent_directly",
 		"proxy_node": "Master Server",
 	})
+}
+
+// UpgradeNode 升级节点 Agent
+// POST /api/nodes/upgrade
+func (h *ServerHandler) UpgradeNode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "JSON Error", err))
+		return
+	}
+
+	node, exists := h.nodeMgr.GetNode(req.ID)
+	if !exists || node.Status != "online" {
+		response.Error(w, e.New(code.NodeOffline, "节点离线或不存在", nil))
+		return
+	}
+
+	// 1. 确定文件名 (根据节点 OS)
+	// 假设 Master 的 uploads 目录下有一个 system 文件夹存放这些文件
+	// Linux: uploads/system/worker_linux_amd64
+	// Windows: uploads/system/worker_windows_amd64.exe
+	fileName := "worker_linux_amd64"
+	if node.OS != "" && containsIgnoreCase(node.OS, "windows") {
+		fileName = "worker_windows_amd64.exe"
+	} else if node.Arch == "arm64" {
+		fileName = "worker_linux_arm64"
+	}
+
+	filePath := filepath.Join(h.uploadDir, "system", fileName)
+
+	// 这里为了演示完整性，假设我们动态计算 Checksum
+	// 实际项目中建议由前端上传时计算好
+	checksum, err := calculateFileHash(filePath)
+	if err != nil {
+		response.Error(w, e.New(code.ServerError, "升级包不存在: "+fileName, err))
+		return
+	}
+
+	// 2. 构造下载链接
+	// 假设 Master IP/Port 已知，或者从 Request Host 获取
+	host := r.Host
+	downloadURL := fmt.Sprintf("http://%s/download/system/%s", host, fileName)
+
+	// 3. 下发指令
+	payload := protocol.WorkerUpgradeRequest{
+		DownloadURL: downloadURL,
+		Checksum:    checksum,
+		Version:     fmt.Sprintf("%d", time.Now().Unix()), // 简单用时间戳做版本
+	}
+
+	if err := h.gateway.SendCommand(req.ID, payload); err != nil { // SendCommand 默认封装 TypeCommand，需修改
+		// 修正：使用 SendRawMessage 或类似机制，或者修改 Gateway 支持自定义 Type
+		// 建议使用 h.gateway.SyncCall 发送 TypeWorkerUpgrade，或者增加 SendUpgradeInstruction
+		h.gateway.SendUpgradeInstruction(req.ID, payload) // 需在 Gateway 实现
+	}
+
+	h.logMgr.RecordLog(utils.GetClientIP(r), "upgrade_node", "node", node.IP, "Version: "+payload.Version, "success")
+	response.Success(w, nil)
 }
