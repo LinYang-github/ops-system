@@ -61,7 +61,7 @@ func (nm *NodeManager) loadFromDB() {
 	for rows.Next() {
 		var n protocol.NodeInfo
 		rows.Scan(
-			&n.ID, &n.IP, &n.Port, &n.Hostname, &n.Name, &n.MacAddr, &n.OS, &n.Arch,
+			&n.ID, &n.IP, &n.Hostname, &n.Name, &n.MacAddr, &n.OS, &n.Arch,
 			&n.CPUCores, &n.MemTotal, &n.DiskTotal,
 			&n.Status, &n.LastHeartbeat,
 		)
@@ -95,8 +95,8 @@ func (nm *NodeManager) persistDirtyNodes() {
 		// 只更新在线节点，减少 IO
 		if node.Status == "online" {
 			// 只更新心跳和状态，静态信息一般不变，同时更新 IP (防止 Worker IP 变动)
-			_, err := tx.Exec("UPDATE node_infos SET last_heartbeat = ?, status = ?, ip = ?, port = ? WHERE id = ?",
-				node.LastHeartbeat, node.Status, node.IP, node.Port, node.ID)
+			_, err := tx.Exec("UPDATE node_infos SET last_heartbeat = ?, status = ?, ip = ? WHERE id = ?",
+				node.LastHeartbeat, node.Status, node.IP, node.ID)
 			if err != nil {
 				log.Printf("[Sync] Update failed: %v", err)
 			}
@@ -174,7 +174,6 @@ func (nm *NodeManager) HandleHeartbeat(req protocol.RegisterRequest, remoteIP st
 		newNode := protocol.NodeInfo{
 			ID:            nodeID,
 			IP:            remoteIP,
-			Port:          0, // 默认为 0，表示无监听
 			Hostname:      req.Info.Hostname,
 			Name:          name,
 			MacAddr:       req.Info.MacAddr,
@@ -195,12 +194,12 @@ func (nm *NodeManager) HandleHeartbeat(req protocol.RegisterRequest, remoteIP st
 		// 4.1 存 DB (同步写入，保证持久化)
 		// 使用 INSERT OR REPLACE 确保 ID 冲突时覆盖旧数据
 		insertSQL := `INSERT OR REPLACE INTO node_infos (
-			id, ip, port, hostname, name, mac_addr, os, arch, 
+			id, ip, hostname, name, mac_addr, os, arch, 
 			cpu_cores, mem_total, disk_total, status, last_heartbeat
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 		_, err := nm.db.Exec(insertSQL,
-			newNode.ID, newNode.IP, newNode.Port, newNode.Hostname, newNode.Name, newNode.MacAddr, newNode.OS, newNode.Arch,
+			newNode.ID, newNode.IP, newNode.Hostname, newNode.Name, newNode.MacAddr, newNode.OS, newNode.Arch,
 			newNode.CPUCores, newNode.MemTotal, newNode.DiskTotal, "online", now,
 		)
 
@@ -264,7 +263,7 @@ func (nm *NodeManager) GetAllNodesMetrics() map[string]protocol.NodeInfo {
 
 func (nm *NodeManager) AddPlannedNode(id, name string) error {
 	// 1. 写 DB
-	_, err := nm.db.Exec(`INSERT INTO node_infos (id, port, name, status, hostname, last_heartbeat) VALUES (?, 0, ?, 'planned', '待接入', 0)`, id, name)
+	_, err := nm.db.Exec(`INSERT INTO node_infos (id, name, status, hostname, last_heartbeat) VALUES (?, 0, ?, 'planned', '待接入', 0)`, id, name)
 	if err != nil {
 		return err
 	}

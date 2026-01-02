@@ -64,7 +64,6 @@
                   </div>
                   <div class="node-ip">
                     {{ scope.row.ip }}
-                    <span v-if="scope.row.port > 0" class="node-port">:{{ scope.row.port }}</span>
                   </div>
                 </div>
               </div>

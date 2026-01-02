@@ -10,6 +10,7 @@ import (
 
 	"ops-system/internal/master/manager"
 	"ops-system/internal/master/ws"
+	"ops-system/pkg/config"
 	"ops-system/pkg/protocol"
 	"ops-system/pkg/utils"
 
@@ -324,4 +325,39 @@ func (g *WorkerGateway) RequestTunnel(nodeID string, req protocol.TunnelStartReq
 		"log_key":     req.LogKey,
 	}
 	return g.SendCommand(nodeID, payload)
+}
+
+// BroadcastConfig 向所有连接的 Worker 广播最新的全局配置
+func (g *WorkerGateway) BroadcastConfig(cfg config.GlobalConfig) {
+	// 1. 构造 Worker 能识别的协议包
+	// 对应 pkg/protocol/types.go 中的 HeartbeatResponse
+	payload := protocol.HeartbeatResponse{
+		Code:              200,
+		HeartbeatInterval: int64(cfg.Worker.HeartbeatInterval),
+		MonitorInterval:   int64(cfg.Worker.MonitorInterval),
+	}
+
+	// 2. 封装 WebSocket 消息
+	wsMsg, err := protocol.NewWSMessage(protocol.TypeConfig, "", payload)
+	if err != nil {
+		log.Printf("[Gateway] Failed to create config message: %v", err)
+		return
+	}
+
+	log.Printf("[Gateway] Broadcasting config update to all workers...")
+
+	// 3. 遍历所有连接并发送
+	count := 0
+	g.conns.Range(func(key, value interface{}) bool {
+		wc := value.(*WorkerConnection)
+		select {
+		case wc.SendChan <- wsMsg:
+			count++
+		default:
+			log.Printf("[Gateway] Worker %s send buffer full, skipping config update", wc.NodeID)
+		}
+		return true
+	})
+
+	log.Printf("[Gateway] Config broadcasted to %d workers.", count)
 }

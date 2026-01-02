@@ -59,7 +59,6 @@ func initTables(db *sql.DB) {
 		`CREATE TABLE IF NOT EXISTS node_infos (
 			id TEXT PRIMARY KEY, 
 			ip TEXT,
-			port INTEGER,
 			hostname TEXT,
 			name TEXT,
 			mac_addr TEXT,

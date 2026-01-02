@@ -220,6 +220,10 @@ func (h *ServerHandler) UpdateGlobalConfig(w http.ResponseWriter, r *http.Reques
 		h.logMgr.CleanupOldLogs(cfg.Log.RetentionDays)
 	}()
 
+	if h.gateway != nil {
+		go h.gateway.BroadcastConfig(cfg)
+	}
+
 	// 4. (可选) 记录审计日志
 	h.logMgr.RecordLog(utils.GetClientIP(r), "update_config", "system", "global", "Updated system settings", "success")
 

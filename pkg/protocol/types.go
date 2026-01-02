@@ -7,9 +7,8 @@ package protocol
 // NodeInfo 静态信息
 // NodeInfo 节点信息 (持久化存储)
 type NodeInfo struct {
-	ID        string `json:"id"` // [新增] 唯一标识 UUID
-	IP        string `json:"ip"` // 仅用于通信地址，不再是主键
-	Port      int    `json:"port"`
+	ID        string `json:"id"`       // [新增] 唯一标识 UUID
+	IP        string `json:"ip"`       // 仅用于通信地址，不再是主键
 	Hostname  string `json:"hostname"` // 机器原本的主机名
 	Name      string `json:"name"`     // 用户自定义的节点名称 (别名)
 	MacAddr   string `json:"mac_addr"`
