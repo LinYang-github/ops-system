@@ -296,23 +296,39 @@ func (h *ServerHandler) WakeNode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if proxyNodeID == "" {
-		response.Error(w, e.New(code.NodeOffline, "没有可用的在线节点作为唤醒跳板", nil))
+	// 场景 A: 找到了代理节点 -> 通过 WebSocket 下发指令
+	if proxyNodeID != "" {
+		payload := protocol.WakeOnLanRequest{
+			TargetMAC: targetNode.MacAddr,
+			TargetIP:  targetNode.IP,
+		}
+
+		if err := h.gateway.SendWakeInstruction(proxyNodeID, payload); err != nil {
+			// 如果下发给代理失败，尝试 Master 兜底
+			goto MASTER_FALLBACK
+		}
+
+		h.logMgr.RecordLog(utils.GetClientIP(r), "wake_node", "node", targetNode.IP, "Via Proxy: "+proxyNodeID, "success")
+		response.Success(w, map[string]string{
+			"status":     "sent_via_proxy",
+			"proxy_node": proxyNodeID,
+		})
 		return
 	}
 
-	// 3. 下发指令
-	payload := protocol.WakeOnLanRequest{
-		TargetMAC: targetNode.MacAddr,
-		TargetIP:  targetNode.IP,
-	}
-
-	// [修正点]：移除多余的 workerMsg 声明，直接调用 Gateway 方法
-	if err := h.gateway.SendWakeInstruction(proxyNodeID, payload); err != nil {
-		response.Error(w, e.New(code.NetworkError, "下发唤醒指令失败: "+err.Error(), err))
+MASTER_FALLBACK:
+	// 场景 B: 没找到代理节点 (或者下发失败) -> Master 亲自发送
+	// 使用 pkg/utils 中的 SendMagicPacket
+	if err := utils.SendMagicPacket(targetNode.MacAddr); err != nil {
+		response.Error(w, e.New(code.NetworkError, "Master 直连唤醒失败: "+err.Error(), err))
 		return
 	}
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "wake_node", "node", targetNode.IP, "Via Proxy: "+proxyNodeID, "success")
-	response.Success(w, map[string]string{"proxy_node": proxyNodeID})
+	h.logMgr.RecordLog(utils.GetClientIP(r), "wake_node", "node", targetNode.IP, "Direct Broadcast", "success")
+
+	// 返回特殊状态告诉前端
+	response.Success(w, map[string]string{
+		"status":     "sent_directly",
+		"proxy_node": "Master Server",
+	})
 }

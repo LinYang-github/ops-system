@@ -492,7 +492,12 @@ const handleWake = async (row) => {
     const res = await request.post('/api/nodes/wake', { id: row.id })
     ElMessage.success(`唤醒指令已发送 (代理节点: ${res.proxy_node})`)
   } catch(e) {
-    if (e !== 'cancel') ElMessage.error('唤醒失败: ' + (e.message || e))
+    // 【修改点】移除 ElMessage.error
+    // 如果是用户点击取消 (cancel)，则不做处理
+    // 如果是业务错误 (API Error)，request.js 拦截器已经弹窗提示过了，这里无需重复弹窗
+    if (e !== 'cancel') {
+      console.error(e)
+    }
   }
 }
 // ==========================================

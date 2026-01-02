@@ -11,8 +11,8 @@ import (
 	"ops-system/internal/worker/agent"
 	"ops-system/internal/worker/executor"
 	"ops-system/internal/worker/handler"
-	"ops-system/internal/worker/utils"
 	"ops-system/pkg/protocol"
+	"ops-system/pkg/utils"
 
 	"github.com/gorilla/websocket"
 )

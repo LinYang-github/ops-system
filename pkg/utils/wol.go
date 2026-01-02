@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// SendMagicPacket 发送 WoL 魔术包
+// SendMagicPacket 发送 WoL 魔术包 (公共方法)
 func SendMagicPacket(macAddr string) error {
 	// 1. 解析 MAC 地址
 	hwAddr, err := net.ParseMAC(macAddr)
@@ -24,8 +24,7 @@ func SendMagicPacket(macAddr string) error {
 		packet = append(packet, hwAddr...)
 	}
 
-	// 3. 获取广播地址 (简化版：直接使用全局广播 255.255.255.255)
-	// 端口通常使用 9 (Discard) 或 7 (Echo)
+	// 3. 获取广播地址
 	broadcastAddr := "255.255.255.255:9"
 
 	// 4. 发送 UDP 包
@@ -47,8 +46,7 @@ func SendMagicPacket(macAddr string) error {
 }
 
 // IsSameSubnet 简单的网段匹配辅助函数 (IPv4)
-// 用于 Master 判断两个节点是否在同一局域网
-// 这里简单判断前三段是否一致 (例如 192.168.1.x)
+// 判断两个 IP 是否可能在同一网段 (前三段匹配)
 func IsSameSubnet(ip1, ip2 string) bool {
 	parts1 := strings.Split(ip1, ".")
 	parts2 := strings.Split(ip2, ".")
