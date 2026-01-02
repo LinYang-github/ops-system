@@ -25,6 +25,14 @@ func (m *Manager) RegisterExternal(req protocol.RegisterExternalRequest) error {
 		return err
 	}
 
+	// [新增] 写入元数据
+	meta := InstanceMeta{
+		SystemID:       req.SystemName, // 同样，这里其实是 SystemID
+		ServiceName:    req.Config.Name,
+		ServiceVersion: "external",
+	}
+	m.saveInstanceMeta(virtualDir, meta) // 复用上面的方法
+
 	// 2. 转换配置
 	startBin, startArgs := parseCmdString(req.Config.StartCmd)
 	stopBin, stopArgs := parseCmdString(req.Config.StopCmd)

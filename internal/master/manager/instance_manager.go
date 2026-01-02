@@ -60,23 +60,61 @@ func (im *InstanceManager) UpdateInstanceFullStatus(report *protocol.InstanceSta
 		return
 	}
 
-	// 1. DB 更新状态
 	im.mu.Lock()
-	_, err := im.db.Exec(`UPDATE instance_infos SET status=?, pid=?, uptime=? WHERE id=?`,
+	defer im.mu.Unlock()
+
+	// 1. 尝试更新现有记录
+	// 我们只更新运行状态字段，不覆盖 SystemID/NodeID 等静态字段（除非是插入）
+	res, err := im.db.Exec(`UPDATE instance_infos SET status=?, pid=?, uptime=? WHERE id=?`,
 		report.Status, report.PID, report.Uptime, report.InstanceID)
-	im.mu.Unlock()
 
 	if err != nil {
-		log.Printf("[Error] UpdateInstanceFullStatus DB failed: %v", err)
+		log.Printf("[Error] UpdateInstance status failed: %v", err)
+		// 如果 DB 报错（如锁死），不应继续更新缓存，直接返回
+		return
 	}
 
-	// 2. 内存更新监控数据
+	// 2. 检查更新结果
+	rows, _ := res.RowsAffected()
+
+	// 3. [核心自愈逻辑] 如果影响行数为 0，说明是“幽灵实例” (DB中不存在)，执行自动补录
+	if rows == 0 {
+		// 只有当上报数据中包含必要的元数据时才执行插入
+		// 防止旧版本 Worker 发送的不完整数据污染数据库
+		if report.SystemID != "" && report.NodeID != "" {
+			log.Printf("[AutoDiscovery] Found ghost instance, registering: %s (Sys: %s, Node: %s)",
+				report.InstanceID, report.SystemID, report.NodeID)
+
+			insertSQL := `INSERT INTO instance_infos (
+				id, system_id, node_id, service_name, service_version, status, pid, uptime
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+
+			_, insertErr := im.db.Exec(insertSQL,
+				report.InstanceID,
+				report.SystemID,
+				report.NodeID,
+				report.ServiceName,
+				report.ServiceVersion,
+				report.Status,
+				report.PID,
+				report.Uptime,
+			)
+
+			if insertErr != nil {
+				log.Printf("[Error] Failed to auto-register instance %s: %v", report.InstanceID, insertErr)
+			}
+		}
+	}
+
+	// 4. 更新内存中的实时监控数据 (Metrics)
+	// 无论数据库操作是 Update 还是 Insert，内存监控数据都必须刷新
 	metrics := realTimeMetrics{
 		CpuUsage: report.CpuUsage,
 		MemUsage: report.MemUsage,
 		IoRead:   report.IoRead,
 		IoWrite:  report.IoWrite,
 	}
+
 	im.metricsCache.Store(report.InstanceID, metrics)
 }
 

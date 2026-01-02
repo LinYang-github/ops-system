@@ -145,6 +145,12 @@ type InstanceStatusReport struct {
 	PID        int    `json:"pid"`
 	Uptime     int64  `json:"uptime"`
 
+	// --- [新增] 身份元数据 (用于 Master 灾难恢复) ---
+	SystemID       string `json:"system_id"`
+	NodeID         string `json:"node_id"`
+	ServiceName    string `json:"service_name"`
+	ServiceVersion string `json:"service_version"`
+
 	// 新增监控数据
 	CpuUsage float64 `json:"cpu_usage"`
 	MemUsage uint64  `json:"mem_usage"`

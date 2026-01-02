@@ -1,12 +1,13 @@
 package executor
 
 import (
-	"log"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
+	"ops-system/internal/worker/utils"
 	"ops-system/pkg/protocol"
 
 	"github.com/shirou/gopsutil/v3/process"
@@ -25,7 +26,6 @@ func (m *Manager) StartMonitor(interval time.Duration) {
 		interval = 3 * time.Second
 	}
 
-	// 保存 ticker 到实例中，以便 UpdateMonitorInterval 可以访问
 	m.monitorTicker = time.NewTicker(interval)
 
 	go func() {
@@ -43,7 +43,25 @@ func (m *Manager) UpdateMonitorInterval(seconds int64) {
 	m.monitorTicker.Reset(time.Duration(seconds) * time.Second)
 }
 
-// checkAndReport 核心轮询逻辑
+// getInstanceMeta 读取实例元数据（带缓存）
+func (m *Manager) getInstanceMeta(workDir, instID string) InstanceMeta {
+	// 1. 查缓存
+	if val, ok := m.metaCache.Load(instID); ok {
+		return val.(InstanceMeta)
+	}
+
+	// 2. 读文件 (.meta)
+	var meta InstanceMeta
+	f, err := os.Open(filepath.Join(workDir, ".meta"))
+	if err == nil {
+		json.NewDecoder(f).Decode(&meta)
+		f.Close()
+		m.metaCache.Store(instID, meta) // 写入缓存
+	}
+	return meta
+}
+
+// checkAndReport 核心轮询逻辑 (增强版)
 func (m *Manager) checkAndReport() {
 	if m.StatusReporter == nil {
 		return
@@ -53,7 +71,7 @@ func (m *Manager) checkAndReport() {
 
 	for _, inst := range instances {
 		// 1. 读取 Service Manifest (为了获取进程名特征)
-		mf, _ := readManifest(inst.WorkDir) // 忽略错误，如果读不到就无法进行高级匹配，只依赖 CWD
+		mf, _ := readManifest(inst.WorkDir)
 		exeName := ""
 		if mf != nil {
 			if mf.ProcessName != "" {
@@ -71,7 +89,8 @@ func (m *Manager) checkAndReport() {
 		// ----------------------------------------------------
 		if err != nil {
 			m.clearIOCache(inst.InstanceID)
-			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0)
+			// [修复] 传入 inst.WorkDir
+			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0, inst.WorkDir)
 			continue
 		}
 
@@ -79,7 +98,8 @@ func (m *Manager) checkAndReport() {
 		if pidInt <= 0 {
 			// PID 内容无效 -> 清理文件并上报停止
 			os.Remove(pidPath)
-			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0)
+			// [修复] 传入 inst.WorkDir
+			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0, inst.WorkDir)
 			continue
 		}
 
@@ -90,20 +110,22 @@ func (m *Manager) checkAndReport() {
 
 		// 1. 进程根本不存在 (Zombie File)
 		if err != nil {
-			log.Printf("[Monitor] %s: PID %d not found in OS. Cleaning zombie file.", inst.InstanceID, pidInt)
+			// log.Printf("[Monitor] %s: PID %d not found. Cleaning.", inst.InstanceID, pidInt)
 			os.Remove(pidPath) // [自愈] 删除僵尸 PID 文件
 			m.clearIOCache(inst.InstanceID)
-			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0)
+			// [修复] 传入 inst.WorkDir
+			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0, inst.WorkDir)
 			continue
 		}
 
 		// 2. 进程存在，但特征不匹配 (PID Reuse)
-		// [自愈] 这是解决“状态错乱”的关键：防止接管了不属于自己的进程
+		// [自愈] 解决“状态错乱”：防止接管了不属于自己的进程
 		if !m.validateProcessIdentity(proc, inst.WorkDir, exeName) {
-			log.Printf("[Monitor] %s: PID %d mismatch (identity check failed). Cleaning stale file.", inst.InstanceID, pidInt)
+			// log.Printf("[Monitor] %s: PID %d mismatch. Cleaning.", inst.InstanceID, pidInt)
 			os.Remove(pidPath) // 删除无效文件
 			m.clearIOCache(inst.InstanceID)
-			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0)
+			// [修复] 传入 inst.WorkDir
+			m.doReport(inst.InstanceID, "stopped", 0, 0, 0, 0, 0, 0, inst.WorkDir)
 			continue
 		}
 
@@ -123,7 +145,8 @@ func (m *Manager) checkAndReport() {
 
 		ioReadSpeed, ioWriteSpeed := m.calculateIORate(inst.InstanceID, proc)
 
-		m.doReport(inst.InstanceID, "running", pidInt, startTimeUnix, cpuPercent, memUsageMB, ioReadSpeed, ioWriteSpeed)
+		// [修复] 传入 inst.WorkDir
+		m.doReport(inst.InstanceID, "running", pidInt, startTimeUnix, cpuPercent, memUsageMB, ioReadSpeed, ioWriteSpeed, inst.WorkDir)
 	}
 }
 
@@ -174,7 +197,12 @@ func (m *Manager) clearIOCache(instID string) {
 }
 
 // doReport 组装并发送报告
-func (m *Manager) doReport(instID, status string, pid int, uptime int64, cpu float64, mem, ioRead, ioWrite uint64) {
+// [修改] 增加 workDir 参数，用于读取 .meta
+func (m *Manager) doReport(instID, status string, pid int, uptime int64, cpu float64, mem, ioRead, ioWrite uint64, workDir string) {
+
+	// 获取元数据 (SystemID, ServiceName 等)
+	meta := m.getInstanceMeta(workDir, instID)
+
 	report := protocol.InstanceStatusReport{
 		InstanceID: instID,
 		Status:     status,
@@ -184,6 +212,11 @@ func (m *Manager) doReport(instID, status string, pid int, uptime int64, cpu flo
 		MemUsage:   mem,
 		IoRead:     ioRead,
 		IoWrite:    ioWrite,
+		// 填充元数据，实现 Master 自愈
+		SystemID:       meta.SystemID,
+		ServiceName:    meta.ServiceName,
+		ServiceVersion: meta.ServiceVersion,
+		NodeID:         utils.GetNodeID(),
 	}
 
 	if m.StatusReporter != nil {

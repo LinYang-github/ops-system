@@ -31,6 +31,8 @@ type Manager struct {
 	// 外部依赖
 	// 使用回调函数解耦 Transport 层
 	StatusReporter ReportFunc
+
+	metaCache sync.Map // key: instanceID, value: InstanceMeta
 }
 
 // NewManager 构造函数

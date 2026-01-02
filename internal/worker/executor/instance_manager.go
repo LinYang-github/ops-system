@@ -37,6 +37,14 @@ type InstanceDirInfo struct {
 	WorkDir    string
 }
 
+// 辅助结构体，用于本地存储
+type InstanceMeta struct {
+	SystemID       string `json:"system_id"`
+	NodeID         string `json:"node_id"` // 虽然 Worker 知道自己是谁，但存下来保持一致性
+	ServiceName    string `json:"service_name"`
+	ServiceVersion string `json:"service_version"`
+}
+
 // -------------------------------------------------------
 // 目录查找与扫描逻辑 (挂载在 Manager 上)
 // -------------------------------------------------------
@@ -187,6 +195,17 @@ func (m *Manager) DeployInstance(req protocol.DeployRequest) error {
 	}
 	if err := unzip(cachedZipPath, workDir); err != nil {
 		return fmt.Errorf("unzip failed: %v", err)
+	}
+
+	// [新增] 4.5 持久化元数据 (用于上报和自愈)
+	meta := InstanceMeta{
+		SystemID:       req.SystemName, // 注意：协议里 SystemName 其实传的是 SystemID
+		ServiceName:    req.ServiceName,
+		ServiceVersion: req.Version,
+		// NodeID 可以动态获取，也可以存
+	}
+	if err := m.saveInstanceMeta(workDir, meta); err != nil {
+		log.Printf("[Deploy] Warning: failed to save meta: %v", err)
 	}
 
 	// 4. 配置覆写 (Readiness Probe)
@@ -667,4 +686,14 @@ func (m *Manager) strictIsRunning(workDir string) bool {
 
 	// 复用 validator 的逻辑 (如果找不到 exeName 传空，只校验 CWD)
 	return m.validateProcessIdentity(proc, workDir, "")
+}
+
+// [新增] 辅助方法：保存元数据
+func (m *Manager) saveInstanceMeta(workDir string, meta InstanceMeta) error {
+	f, err := os.Create(filepath.Join(workDir, ".meta"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return json.NewEncoder(f).Encode(meta)
 }
