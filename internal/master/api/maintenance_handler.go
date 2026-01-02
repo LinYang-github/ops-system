@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -90,7 +91,8 @@ func (h *ServerHandler) CleanupNodeCaches(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Retain int `json:"retain"`
 	}
-	json.NewDecoder(r.Body).Decode(&req) // Ignore error, default 0
+	// 忽略错误，默认 retain=0 (全清)
+	json.NewDecoder(r.Body).Decode(&req)
 
 	nodes := h.nodeMgr.GetAllNodes()
 	var wg sync.WaitGroup
@@ -98,14 +100,21 @@ func (h *ServerHandler) CleanupNodeCaches(w http.ResponseWriter, r *http.Request
 
 	totalFreed := int64(0)
 	successCount := 0
-	totalOnline := 0
+	targetCount := 0 // 实际尝试清理的在线节点数
 
 	// 并发下发指令
 	for _, node := range nodes {
+		// 1. 严格过滤非在线节点
 		if node.Status != "online" {
 			continue
 		}
-		totalOnline++
+
+		// 2. 双重检查：确保 WebSocket 连接实际存在
+		if !h.gateway.IsConnected(node.ID) {
+			continue
+		}
+
+		targetCount++
 		wg.Add(1)
 
 		go func(nid string) {
@@ -129,11 +138,14 @@ func (h *ServerHandler) CleanupNodeCaches(w http.ResponseWriter, r *http.Request
 
 	wg.Wait()
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "cleanup_cache", "cluster", "all_nodes", "Batch cleanup", "success")
+	logDetail := fmt.Sprintf("Targets: %d, Success: %d, Freed: %s", targetCount, successCount, utils.FormatBytes(totalFreed))
+	h.logMgr.RecordLog(utils.GetClientIP(r), "cleanup_cache", "cluster", "online_nodes", logDetail, "success")
 
+	// 返回统计信息
+	// 前端可以根据 total_nodes 和 target_count 区分展示
 	response.Success(w, map[string]interface{}{
-		"total_nodes":   len(nodes),
-		"online_nodes":  totalOnline,
+		"total_nodes":   len(nodes),  // 总注册节点
+		"target_nodes":  targetCount, // 实际在线并尝试清理的节点
 		"success_count": successCount,
 		"total_freed":   totalFreed,
 	})

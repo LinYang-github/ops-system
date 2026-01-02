@@ -323,11 +323,16 @@ const executeClean = async () => {
     
     cleanDialog.visible = false
     
-    // 显示详细结果通知
     const totalSize = formatSize(res.total_freed)
+    
+    // 优化提示文案：显示 成功数 / 在线数
+    // res.target_nodes 是后端新返回的字段，表示在线节点数
+    // 兼容旧接口：如果后端没返回 target_nodes，降级显示 res.total_nodes
+    const totalBase = res.target_nodes !== undefined ? res.target_nodes : res.total_nodes
+    
     ElNotification({
       title: '清理完成',
-      message: `成功节点: ${res.success_count} / ${res.total_nodes}，共释放空间: ${totalSize}`,
+      message: `在线节点清理成功: ${res.success_count} / ${totalBase}，共释放空间: ${totalSize}`,
       type: 'success',
       duration: 5000
     })
