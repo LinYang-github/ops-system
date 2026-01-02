@@ -11,6 +11,7 @@ import (
 	"ops-system/internal/worker/agent"
 	"ops-system/internal/worker/executor"
 	"ops-system/internal/worker/handler"
+	"ops-system/internal/worker/utils"
 	"ops-system/pkg/protocol"
 
 	"github.com/gorilla/websocket"
@@ -136,6 +137,8 @@ func (c *WorkerClient) readLoop() {
 			c.handleScanOrphans(msg)
 		case protocol.TypeDeleteOrphans:
 			c.handleDeleteOrphans(msg)
+		case protocol.TypeWakeOnLan:
+			c.handleWakeOnLan(msg)
 		}
 	}
 }
@@ -412,5 +415,20 @@ func (c *WorkerClient) sendPacket(msgType string) {
 	select {
 	case c.SendChan <- wsMsg:
 	default:
+	}
+}
+
+func (c *WorkerClient) handleWakeOnLan(msg protocol.WSMessage) {
+	var req protocol.WakeOnLanRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		log.Printf("❌ [WoL] Invalid payload: %v", err)
+		return
+	}
+
+	log.Printf("⚡ [WoL] Broadcasting Magic Packet to MAC: %s", req.TargetMAC)
+	if err := utils.SendMagicPacket(req.TargetMAC); err != nil {
+		log.Printf("❌ [WoL] Failed: %v", err)
+	} else {
+		log.Printf("✅ [WoL] Packet sent.")
 	}
 }

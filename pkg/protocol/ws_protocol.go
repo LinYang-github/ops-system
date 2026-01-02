@@ -15,6 +15,7 @@ const (
 	TypeCleanupCache  = "cleanup_cache"
 	TypeScanOrphans   = "scan_orphans"
 	TypeDeleteOrphans = "delete_orphans"
+	TypeWakeOnLan     = "wake_on_lan" // Master -> Worker (让 Worker 发送唤醒包)
 )
 
 // WSMessage 统一信封

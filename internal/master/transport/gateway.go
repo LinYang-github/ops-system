@@ -361,3 +361,21 @@ func (g *WorkerGateway) BroadcastConfig(cfg config.GlobalConfig) {
 
 	log.Printf("[Gateway] Config broadcasted to %d workers.", count)
 }
+
+// SendWakeInstruction 发送唤醒指令
+func (g *WorkerGateway) SendWakeInstruction(nodeID string, payload protocol.WakeOnLanRequest) error {
+	val, ok := g.conns.Load(nodeID)
+	if !ok {
+		return fmt.Errorf("proxy node offline")
+	}
+	wc := val.(*WorkerConnection)
+
+	msg, _ := protocol.NewWSMessage(protocol.TypeWakeOnLan, "", payload)
+
+	select {
+	case wc.SendChan <- msg:
+		return nil
+	default:
+		return fmt.Errorf("send buffer full")
+	}
+}

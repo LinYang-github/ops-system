@@ -137,63 +137,69 @@ func GetStatus() protocol.NodeStatus {
 	return status
 }
 
-// getNetworkInfo (保持之前的 UDP Dial 优化逻辑不变)
+// getNetworkInfo 获取本机首选 IP 和 MAC
 func getNetworkInfo() (string, string) {
-	ip := "127.0.0.1"
-	mac := ""
-
-	// 尝试 UDP 获取首选出站 IP
-	conn, err := net.Dial("udp", "8.8.8.8:80")
+	// 策略1：尝试通过 UDP 连接外网 (Google DNS) 确定首选出口 IP
+	// 这在多网卡环境下最准确
+	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 2*time.Second)
 	if err == nil {
 		defer conn.Close()
 		localAddr := conn.LocalAddr().(*net.UDPAddr)
-		ip = localAddr.IP.String()
-	} else {
-		ip = getFallbackIP()
+		targetIP := localAddr.IP.String()
+
+		// 根据 IP 反查 MAC
+		if mac := findMacByIP(targetIP); mac != "" {
+			return targetIP, mac
+		}
 	}
 
-	// 匹配 MAC
-	interfaces, _ := net.Interfaces()
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, _ := iface.Addrs()
-		for _, addr := range addrs {
-			var currentIP string
-			switch v := addr.(type) {
-			case *net.IPNet:
-				currentIP = v.IP.String()
-			case *net.IPAddr:
-				currentIP = v.IP.String()
-			}
-			if currentIP == ip {
-				mac = iface.HardwareAddr.String()
-				return ip, mac
-			}
-		}
-	}
-	// Fallback MAC
-	if mac == "" && len(interfaces) > 0 {
-		for _, iface := range interfaces {
-			if iface.HardwareAddr.String() != "" {
-				mac = iface.HardwareAddr.String()
-				break
-			}
-		}
-	}
-	return ip, mac
+	// 策略2：离线/内网模式，遍历网卡获取第一个有效的物理网卡
+	return getFirstPhysicalInfo()
 }
 
-func getFallbackIP() string {
+// findMacByIP 根据 IP 地址查找对应的 MAC
+func findMacByIP(targetIP string) string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return "127.0.0.1"
+		return ""
 	}
 	for _, iface := range interfaces {
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			ipStr := ""
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ipStr = v.IP.String()
+			case *net.IPAddr:
+				ipStr = v.IP.String()
+			}
+			if ipStr == targetIP {
+				return iface.HardwareAddr.String()
+			}
+		}
+	}
+	return ""
+}
+
+// getFirstPhysicalInfo 兜底策略：获取第一个非回环的物理网卡信息
+func getFirstPhysicalInfo() (string, string) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "127.0.0.1", ""
+	}
+
+	for _, iface := range interfaces {
+		// 过滤条件：
+		// 1. 必须是 Up 状态
+		// 2. 不能是 Loopback (回环)
+		// 3. MAC 地址不能为空
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
+		if iface.HardwareAddr == nil || iface.HardwareAddr.String() == "" {
+			continue
+		}
+
 		addrs, _ := iface.Addrs()
 		for _, addr := range addrs {
 			var ip net.IP
@@ -203,14 +209,16 @@ func getFallbackIP() string {
 			case *net.IPAddr:
 				ip = v.IP
 			}
-			if ip == nil || ip.IsLoopback() {
+
+			// 只取 IPv4
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
 				continue
 			}
-			ip = ip.To4()
-			if ip != nil {
-				return ip.String()
-			}
+
+			// 找到符合条件的第一个，直接返回
+			return ip.String(), iface.HardwareAddr.String()
 		}
 	}
-	return "127.0.0.1"
+
+	return "127.0.0.1", ""
 }

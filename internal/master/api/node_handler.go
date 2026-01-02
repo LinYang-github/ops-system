@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"ops-system/internal/master/ws"
@@ -51,19 +52,19 @@ func (h *ServerHandler) AddNode(w http.ResponseWriter, r *http.Request) {
 // POST /api/nodes/delete
 func (h *ServerHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IP string `json:"ip"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
 		return
 	}
 
-	if err := h.nodeMgr.DeleteNode(req.IP); err != nil {
+	if err := h.nodeMgr.DeleteNode(req.ID); err != nil {
 		response.Error(w, e.New(code.DatabaseError, "删除节点失败", err))
 		return
 	}
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.IP, "", "success")
+	h.logMgr.RecordLog(utils.GetClientIP(r), "delete_node", "node", req.ID, "", "success")
 	ws.BroadcastNodes(h.nodeMgr.GetAllNodes())
 
 	response.Success(w, nil)
@@ -244,4 +245,74 @@ func (h *ServerHandler) HandleNodeTerminal(w http.ResponseWriter, r *http.Reques
 	}()
 
 	<-errChan
+}
+
+// WakeNode 远程唤醒节点
+// POST /api/nodes/wake
+func (h *ServerHandler) WakeNode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "JSON Error", err))
+		return
+	}
+
+	// 1. 获取目标节点信息
+	targetNode, exists := h.nodeMgr.GetNode(req.ID)
+	if !exists {
+		response.Error(w, e.New(code.NodeNotFound, "节点不存在", nil))
+		return
+	}
+
+	if targetNode.MacAddr == "" {
+		response.Error(w, e.New(code.ParamError, "目标节点未采集到 MAC 地址，无法唤醒", nil))
+		return
+	}
+
+	// 2. 寻找代理节点 (Proxy Node)
+	// 策略：遍历所有在线节点，寻找 IP 前缀相同的节点 (同一网段)
+	allNodes := h.nodeMgr.GetAllNodes()
+	var proxyNodeID string
+	targetIPParts := strings.Split(targetNode.IP, ".")
+
+	// 简单的 /24 网段匹配逻辑
+	targetPrefix := ""
+	if len(targetIPParts) == 4 {
+		targetPrefix = strings.Join(targetIPParts[:3], ".") // e.g. "192.168.1"
+	}
+
+	for _, n := range allNodes {
+		if n.Status == "online" && n.ID != targetNode.ID { // 必须在线且不是自己
+			// 如果能匹配到网段最好
+			if targetPrefix != "" && strings.HasPrefix(n.IP, targetPrefix) {
+				proxyNodeID = n.ID
+				break
+			}
+			// 兜底：如果还没找到，先随便记一个在线的，万一是在大二层网络里呢？
+			if proxyNodeID == "" {
+				proxyNodeID = n.ID
+			}
+		}
+	}
+
+	if proxyNodeID == "" {
+		response.Error(w, e.New(code.NodeOffline, "没有可用的在线节点作为唤醒跳板", nil))
+		return
+	}
+
+	// 3. 下发指令
+	payload := protocol.WakeOnLanRequest{
+		TargetMAC: targetNode.MacAddr,
+		TargetIP:  targetNode.IP,
+	}
+
+	// [修正点]：移除多余的 workerMsg 声明，直接调用 Gateway 方法
+	if err := h.gateway.SendWakeInstruction(proxyNodeID, payload); err != nil {
+		response.Error(w, e.New(code.NetworkError, "下发唤醒指令失败: "+err.Error(), err))
+		return
+	}
+
+	h.logMgr.RecordLog(utils.GetClientIP(r), "wake_node", "node", targetNode.IP, "Via Proxy: "+proxyNodeID, "success")
+	response.Success(w, map[string]string{"proxy_node": proxyNodeID})
 }

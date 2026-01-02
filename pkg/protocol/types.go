@@ -353,3 +353,9 @@ type TunnelStartRequest struct {
 	Rows       int    `json:"rows,omitempty"`        // 用于终端
 	Cols       int    `json:"cols,omitempty"`        // 用于终端
 }
+
+// WakeOnLanRequest 唤醒请求
+type WakeOnLanRequest struct {
+	TargetMAC string `json:"target_mac"` // 目标机器 MAC 地址
+	TargetIP  string `json:"target_ip"`  // 目标机器 IP (用于广播地址计算，可选，默认 255.255.255.255)
+}

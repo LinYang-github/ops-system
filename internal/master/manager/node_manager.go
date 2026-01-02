@@ -263,7 +263,7 @@ func (nm *NodeManager) GetAllNodesMetrics() map[string]protocol.NodeInfo {
 
 func (nm *NodeManager) AddPlannedNode(id, name string) error {
 	// 1. 写 DB
-	_, err := nm.db.Exec(`INSERT INTO node_infos (id, name, status, hostname, last_heartbeat) VALUES (?, 0, ?, 'planned', '待接入', 0)`, id, name)
+	_, err := nm.db.Exec(`INSERT INTO node_infos (id, name, status, hostname, last_heartbeat) VALUES (?, ?, 'planned', '待接入', 0)`, id, name)
 	if err != nil {
 		return err
 	}

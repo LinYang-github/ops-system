@@ -159,6 +159,15 @@
                     <el-dropdown-item command="delete" icon="Delete" class="text-danger" divided>
                       删除节点
                     </el-dropdown-item>
+                    <!-- 新增：仅当节点离线时显示 -->
+                    <el-dropdown-item 
+                      v-if="scope.row.status === 'offline'"
+                      command="wake" 
+                      icon="Lightning" 
+                      style="color: #E6A23C"
+                    >
+                      远程唤醒 (WoL)
+                    </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -272,7 +281,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { wsStore } from '../store/wsStore'
 import { 
   Search, Plus, Refresh, Monitor, Edit, ArrowDown, 
-  Platform, RefreshLeft, Delete, InfoFilled, View 
+  Platform, RefreshLeft, Delete, InfoFilled, View, Lightning
 } from '@element-plus/icons-vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import WebTerminal from './WebTerminal.vue'
@@ -382,7 +391,9 @@ const handleCommand = (cmd, row) => {
     openTerminal(row)
   } else if (cmd === 'detail') {
     openDetail(row)
-  }
+  } else if (cmd === 'wake') {
+    handleWake(row)
+  } 
 }
 
 // --- 重命名 ---
@@ -465,6 +476,25 @@ const execCmd = async () => {
   }
 }
 
+const handleWake = async (row) => {
+  if (!row.mac_addr) {
+    ElMessage.warning('该节点未采集到 MAC 地址，无法唤醒')
+    return
+  }
+  
+  try {
+    await ElMessageBox.confirm(
+      `即将通过局域网广播唤醒节点 ${row.name} (${row.ip})，需确保所在网段有其他在线节点。`, 
+      '唤醒确认', 
+      { confirmButtonText: '发送唤醒包', type: 'warning' }
+    )
+    
+    const res = await request.post('/api/nodes/wake', { id: row.id })
+    ElMessage.success(`唤醒指令已发送 (代理节点: ${res.proxy_node})`)
+  } catch(e) {
+    if (e !== 'cancel') ElMessage.error('唤醒失败: ' + (e.message || e))
+  }
+}
 // ==========================================
 // 4. 辅助函数 (Utils)
 // ==========================================

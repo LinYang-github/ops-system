@@ -227,6 +227,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, gui
 	mux.HandleFunc("/api/nodes/reset_name", h.ResetNodeName)
 	mux.HandleFunc("/api/ctrl/cmd", h.TriggerCmd)              // 已改为 WS 下发
 	mux.HandleFunc("/api/node/terminal", h.HandleNodeTerminal) // 暂依赖直连 IP
+	mux.HandleFunc("/api/nodes/wake", h.WakeNode)
 
 	// --- System 配置相关 ---
 	mux.HandleFunc("/api/systems", h.GetSystems)
