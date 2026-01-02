@@ -143,7 +143,6 @@ func (nm *NodeManager) HandleHeartbeat(req protocol.RegisterRequest, remoteIP st
 		// 即使是老节点，IP 和端口也可能发生变化 (DHCP, 容器重启等)
 		// Master 后续调用 Worker 接口时将使用这里最新的 IP
 		node.IP = remoteIP
-		node.Port = req.Port
 
 		// 3.3 更新实时监控快照 (用于列表展示)
 		node.CPUUsage = req.Status.CPUUsage
@@ -175,7 +174,7 @@ func (nm *NodeManager) HandleHeartbeat(req protocol.RegisterRequest, remoteIP st
 		newNode := protocol.NodeInfo{
 			ID:            nodeID,
 			IP:            remoteIP,
-			Port:          req.Port,
+			Port:          0, // 默认为 0，表示无监听
 			Hostname:      req.Info.Hostname,
 			Name:          name,
 			MacAddr:       req.Info.MacAddr,

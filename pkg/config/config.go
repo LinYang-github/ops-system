@@ -54,7 +54,6 @@ type WorkerConfig struct {
 }
 
 type WorkerServerConfig struct {
-	Port    int    `mapstructure:"port"`
 	WorkDir string `mapstructure:"work_dir"`
 }
 

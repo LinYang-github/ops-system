@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"log"
-	"net/http"
 	"os/exec"
 	"runtime"
 
@@ -17,18 +16,6 @@ type TerminalMessage struct {
 	Rows int    `json:"rows"`
 	Cols int    `json:"cols"`
 	Data string `json:"data"` // Base64 or plain text if needed
-}
-
-// HandleTerminal 处理终端 WebSocket
-// HTTP 包装函数 (供 server.go 调用)
-func (h *WorkerHandler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("Terminal upgrade failed: %v", err)
-		return
-	}
-	// 转交给业务逻辑
-	ServeTerminal(conn)
 }
 
 // ServeTerminal 直接处理 WebSocket 连接 (供 Tunnel 调用)

@@ -45,7 +45,6 @@ type NodeStatus struct {
 
 // RegisterRequest 注册/心跳请求
 type RegisterRequest struct {
-	Port   int        `json:"port"` // Worker 监听的端口
 	Info   NodeInfo   `json:"info"`
 	Status NodeStatus `json:"status"`
 }

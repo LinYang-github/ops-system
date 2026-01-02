@@ -70,7 +70,6 @@ func LoadWorkerConfig(cfgFile string) (*WorkerConfig, error) {
 	// Worker 同理，使用全局实例
 	v := viper.GetViper()
 
-	v.SetDefault("server.port", 8081)
 	v.SetDefault("logic.heartbeat_interval", "5s")
 	v.SetDefault("logic.monitor_interval", "3s")
 	v.SetDefault("logic.http_client_timeout", "10s")
