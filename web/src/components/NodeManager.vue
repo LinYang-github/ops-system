@@ -275,9 +275,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, h } from 'vue'
 import request from '../utils/request'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElAlert } from 'element-plus'
 import { wsStore } from '../store/wsStore'
 import { 
   Search, Plus, Refresh, Monitor, Edit, ArrowDown, 
@@ -483,23 +483,57 @@ const handleWake = async (row) => {
   }
   
   try {
-    await ElMessageBox.confirm(
-      `即将通过局域网广播唤醒节点 ${row.name} (${row.ip})，需确保所在网段有其他在线节点。`, 
-      '唤醒确认', 
-      { confirmButtonText: '发送唤醒包', type: 'warning' }
-    )
+    // 使用 h 函数渲染 VNode，完美支持黑夜模式和组件样式
+    await ElMessageBox({
+      title: '远程唤醒确认',
+      // message 接收 VNode
+      message: h('div', null, [
+        h('p', { style: 'margin-bottom: 12px; font-size: 14px;' }, [
+          '即将向节点 ',
+          h('span', { style: 'font-weight: bold; color: var(--el-text-color-primary);' }, row.name),
+          h('span', { style: 'color: var(--el-text-color-secondary); margin-left: 4px;' }, `(${row.ip})`),
+          ' 发送唤醒指令。'
+        ]),
+        // 渲染 ElAlert 组件
+        h(ElAlert, {
+          title: '唤醒生效的前提条件：',
+          type: 'warning',
+          showIcon: true,
+          closable: false,
+          style: 'line-height: 1.4'
+        }, {
+          // 使用插槽渲染列表内容
+          default: () => h('ul', { style: 'margin: 4px 0 0 0; padding-left: 18px; font-size: 12px;' }, [
+            h('li', '目标机器 BIOS/UEFI 已开启 Wake-on-LAN 功能'),
+            h('li', '目标系统网卡设置已开启 PME 唤醒/魔术包唤醒'),
+            h('li', 'Master 或任一在线 Worker 与目标节点处于同一局域网')
+          ])
+        })
+      ]),
+      showCancelButton: true,
+      confirmButtonText: '发送魔术包',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--warning', // 按钮设为橙色警告色
+    })
     
+    // 发起请求
     const res = await request.post('/api/nodes/wake', { id: row.id })
-    ElMessage.success(`唤醒指令已发送 (代理节点: ${res.proxy_node})`)
-  } catch(e) {
-    // 【修改点】移除 ElMessage.error
-    // 如果是用户点击取消 (cancel)，则不做处理
-    // 如果是业务错误 (API Error)，request.js 拦截器已经弹窗提示过了，这里无需重复弹窗
-    if (e !== 'cancel') {
-      console.error(e)
+    
+    // 根据后端返回的 status 显示不同的提示
+    if (res.status === 'sent_via_proxy') {
+      ElMessage.success(`唤醒指令已通过代理节点 [${res.proxy_node}] 广播`)
+    } else if (res.status === 'sent_directly') {
+      ElMessage.success(`Master 已直接广播唤醒魔术包`)
+    } else {
+      ElMessage.success(`唤醒指令已发送`)
     }
+
+  } catch(e) {
+    // 拦截取消操作
+    if (e !== 'cancel') console.error(e)
   }
 }
+
 // ==========================================
 // 4. 辅助函数 (Utils)
 // ==========================================
