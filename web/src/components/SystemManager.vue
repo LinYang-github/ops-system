@@ -778,8 +778,7 @@ const deployInstance = async () => {
       system_id: currentSystem.value.id,
       service_name: deployDialog.targetModule.package_name,
       service_version: deployDialog.targetModule.package_version,
-      // 如果是 'auto'，传给后端逻辑处理，否则传具体的 NodeID
-      node_id: deployDialog.nodeID === 'auto' ? '' : deployDialog.nodeID
+      node_id: deployDialog.nodeID
     }
     
     await request.post('/api/deploy', payload)

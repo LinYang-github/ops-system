@@ -76,6 +76,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 	node, exists := h.nodeMgr.GetNode(targetNodeID)
 	if !exists || node.Status != "online" {
 		response.Error(w, e.New(code.NodeOffline, "节点离线或不存在", nil))
+		return
 	}
 
 	// ==========================================
