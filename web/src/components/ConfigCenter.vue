@@ -1,224 +1,430 @@
 <template>
   <div class="view-container">
-    
-    <!-- 状态 A：未连接 -->
-    <div v-if="!connected" class="empty-wrapper">
-      <el-empty description="尚未连接 Nacos 配置中心">
-        <template #extra>
-          <div class="guide-text">
-            请前往 <el-tag @click="goToSettings" style="cursor: pointer">系统设置 -> 配置中心</el-tag> 填写连接信息。
-          </div>
-        </template>
-      </el-empty>
-    </div>
-
-    <!-- 状态 B：已连接 (正常功能) -->
-    <div v-else class="content-body" v-loading="loading">
+    <div class="content-body">
       <el-card shadow="never" class="main-card">
         <template #header>
           <div class="card-header">
-            <div class="header-left">
-              <span class="title">Nacos 配置管理</span>
-              <el-tag type="success" effect="plain" size="small" round class="status-tag">
-                <span class="dot"></span> Connected
+            <span class="title">配置中心</span>
+            <div class="header-extra">
+              <el-tag :type="nacosConnected ? 'success' : 'info'" size="small">
+                Nacos: {{ nacosConnected ? '已连接' : '未连接' }}
               </el-tag>
             </div>
-            <!-- 去掉了原来的“连接设置”按钮 -->
           </div>
         </template>
 
-        <!-- 筛选栏 (保持不变) -->
-        <div class="filter-bar">
-          <el-select v-model="currNs" placeholder="命名空间" style="width: 220px" @change="fetchConfigs">
-            <template #prefix><el-icon><Folder /></el-icon></template>
-            <el-option v-for="ns in namespaces" :key="ns.namespace" :label="`${ns.namespaceShowName} (${ns.namespace})`" :value="ns.namespace" />
-          </el-select>
-          <el-input v-model="currGroup" placeholder="Group" style="width: 150px" clearable @clear="fetchConfigs" />
-          <el-input v-model="currDataId" placeholder="搜索 Data ID..." style="width: 240px" clearable @clear="fetchConfigs" :prefix-icon="Search" />
-          
-          <el-button type="primary" icon="Search" @click="fetchConfigs">查询</el-button>
-          <div style="flex: 1"></div>
-          <el-button type="primary" plain icon="Plus" @click="openEdit(null)">新建配置</el-button>
-        </div>
+        <el-tabs v-model="activeTab" class="config-tabs">
+          <!-- Tab 1: 原生配置模板 -->
+          <el-tab-pane label="原生配置模板" name="native">
+            <div class="pane-content">
+              <div class="filter-bar">
+                <el-button type="primary" icon="Plus" @click="handleOpenTplDialog()">新建模板</el-button>
+                <el-button icon="Refresh" @click="fetchTemplates" :loading="tplLoading">刷新</el-button>
+              </div>
 
-        <!-- 表格 (保持不变) -->
-        <el-table :data="configList" style="width: 100%" stripe class="custom-table">
-          <el-table-column prop="dataId" label="Data ID" min-width="200" show-overflow-tooltip>
-             <template #default="scope">
-                <span class="data-id-text">{{ scope.row.dataId }}</span>
-             </template>
-          </el-table-column>
-          <el-table-column prop="group" label="Group" width="180">
-             <template #default="scope">
-                <el-tag type="info" size="small">{{ scope.row.group }}</el-tag>
-             </template>
-          </el-table-column>
-          <el-table-column prop="type" label="Type" width="100">
-             <template #default="scope">
-                <span class="type-text">{{ scope.row.type || 'text' }}</span>
-             </template>
-          </el-table-column>
-          <el-table-column label="操作" width="150" align="right" fixed="right">
-            <template #default="scope">
-              <el-button link type="primary" icon="Edit" @click="openEdit(scope.row)">编辑</el-button>
-              <el-divider direction="vertical" />
-              <el-popconfirm title="确定删除此配置?" @confirm="deleteConfig(scope.row)">
-                <template #reference><el-button link type="danger" icon="Delete">删除</el-button></template>
-              </el-popconfirm>
-            </template>
-          </el-table-column>
-        </el-table>
-        
-        <div class="pagination">
-           <el-pagination 
-             layout="total, prev, pager, next" 
-             :total="total" 
-             v-model:current-page="page" 
-             :page-size="10" 
-             @current-change="fetchConfigs"
-             background
-           />
-        </div>
+              <el-table :data="templateList" v-loading="tplLoading" stripe border>
+                <el-table-column prop="name" label="模板名称" min-width="180">
+                  <template #default="{ row }">
+                    <span class="tpl-name">{{ row.name }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="format" label="格式" width="100" align="center">
+                  <template #default="{ row }">
+                    <el-tag size="small" effect="plain">{{ row.format.toUpperCase() }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="update_time" label="更新时间" width="180">
+                  <template #default="{ row }">{{ formatTime(row.update_time) }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="160" fixed="right" align="center">
+                  <template #default="{ row }">
+                    <el-button link type="primary" icon="Edit" @click="handleOpenTplDialog(row)">编辑</el-button>
+                    <el-popconfirm title="确定删除此模板?" @confirm="handleDeleteTemplate(row.id)">
+                      <template #reference>
+                        <el-button link type="danger" icon="Delete">删除</el-button>
+                      </template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </el-tab-pane>
+
+          <!-- Tab 2: Nacos 代理 -->
+          <el-tab-pane label="Nacos 代理" name="nacos">
+            <div class="pane-content">
+              <div v-if="!nacosConnected" class="empty-wrapper">
+                <el-empty description="Nacos 服务未配置或连接失败">
+                  <el-button type="primary" plain @click="checkNacosConnection">检测并重新连接</el-button>
+                </el-empty>
+              </div>
+
+              <div v-else>
+                <div class="filter-bar">
+                  <el-select v-model="nacosState.currNs" placeholder="命名空间" style="width: 220px" @change="fetchNacosConfigs">
+                    <el-option 
+                      v-for="ns in nacosState.namespaces" 
+                      :key="ns.namespace" 
+                      :label="ns.namespaceShowName || 'Public'" 
+                      :value="ns.namespace" 
+                    />
+                  </el-select>
+                  <el-input 
+                    v-model="nacosState.currDataId" 
+                    placeholder="搜索 Data ID" 
+                    style="width: 250px" 
+                    clearable 
+                    @keyup.enter="fetchNacosConfigs"
+                  >
+                    <template #append>
+                      <el-button icon="Search" @click="fetchNacosConfigs" />
+                    </template>
+                  </el-input>
+                  <div class="flex-grow"></div>
+                  <el-button type="success" icon="Plus" @click="handleOpenNacosDialog()">发布配置</el-button>
+                </div>
+
+                <el-table :data="nacosState.list" v-loading="nacosState.loading" border stripe>
+                  <el-table-column prop="dataId" label="Data ID" show-overflow-tooltip />
+                  <el-table-column prop="group" label="Group" width="180" />
+                  <el-table-column label="操作" width="160" align="center">
+                    <template #default="{ row }">
+                      <el-button link type="primary" @click="handleOpenNacosDialog(row)">编辑</el-button>
+                      <el-popconfirm title="确定从 Nacos 删除?" @confirm="handleDeleteNacos(row)">
+                        <template #reference>
+                          <el-button link type="danger">删除</el-button>
+                        </template>
+                      </el-popconfirm>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       </el-card>
     </div>
 
-    <!-- 编辑弹窗 (保持不变) -->
+    <!-- 弹窗：原生模板编辑 -->
     <el-dialog 
-      v-model="editDialog.visible" 
-      :title="editDialog.isNew ? '新建配置' : '编辑配置'" 
-      width="800px"
-      top="5vh"
-      append-to-body
+      v-model="tplDialog.visible" 
+      :title="tplDialog.id ? '编辑配置模板' : '新建配置模板'" 
+      width="60%"
+      top="8vh"
+      destroy-on-close
     >
-      <el-form label-width="80px">
-        <div class="form-row">
-           <el-form-item label="Data ID" style="flex: 2">
-              <el-input v-model="editForm.dataId" :disabled="!editDialog.isNew" placeholder="e.g. app.yaml" />
-           </el-form-item>
-           <el-form-item label="Group" style="flex: 1">
-              <el-input v-model="editForm.group" />
-           </el-form-item>
-           <el-form-item label="格式" style="flex: 1">
-              <el-select v-model="editForm.type">
-                  <el-option value="yaml" label="YAML" />
-                  <el-option value="properties" label="Properties" />
-                  <el-option value="json" label="JSON" />
-                  <el-option value="text" label="TEXT" />
+      <el-form 
+        ref="tplFormRef" 
+        :model="tplForm" 
+        :rules="tplRules" 
+        label-position="top"
+        v-loading="tplDialog.saving"
+      >
+        <el-row :gutter="20">
+          <el-col :span="16">
+            <el-form-item label="模板名称" prop="name">
+              <el-input v-model="tplForm.name" placeholder="例如: nginx-base.conf" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="配置格式" prop="format">
+              <el-select v-model="tplForm.format" style="width: 100%">
+                <el-option label="YAML" value="yaml" />
+                <el-option label="JSON" value="json" />
+                <el-option label="PROPERTIES" value="properties" />
+                <el-option label="TEXT" value="text" />
               </el-select>
-           </el-form-item>
-        </div>
+            </el-form-item>
+          </el-col>
+        </el-row>
         
-        <el-form-item label="配置内容">
-           <el-input v-model="editForm.content" type="textarea" :rows="20" class="code-editor" />
+        <el-form-item label="配置内容" prop="content">
+          <template #label>
+            <div class="editor-header">
+              <span>配置内容 (Go Template 语法)</span>
+              <el-button link type="primary" size="small" @click="copyToClipboard(tplForm.content)">复制内容</el-button>
+            </div>
+          </template>
+          <el-input 
+            v-model="tplForm.content" 
+            type="textarea" 
+            :rows="18" 
+            class="code-editor-input" 
+            placeholder="# 在此输入配置内容..."
+          />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="editDialog.visible = false">取消</el-button>
-        <el-button type="primary" @click="publishConfig">发布</el-button>
+        <el-button @click="tplDialog.visible = false">取消</el-button>
+        <el-button type="primary" @click="submitTemplate" :loading="tplDialog.saving">提交保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 弹窗：Nacos 编辑 -->
+    <el-dialog 
+      v-model="nacosDialog.visible" 
+      :title="nacosDialog.isNew ? '发布新配置' : '编辑 Nacos 配置'" 
+      width="60%"
+      top="8vh"
+    >
+      <el-form :model="nacosForm" label-position="top">
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="Data ID">
+              <el-input v-model="nacosForm.dataId" :disabled="!nacosDialog.isNew" placeholder="必填" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="Group">
+              <el-input v-model="nacosForm.group" placeholder="默认 DEFAULT_GROUP" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="配置内容">
+          <el-input v-model="nacosForm.content" type="textarea" :rows="18" class="code-editor-input" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="nacosDialog.visible = false">关闭</el-button>
+        <el-button type="primary" @click="handlePublishNacos" :loading="nacosDialog.saving">执行发布</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, inject } from 'vue'
+import { ref, reactive, onMounted, nextTick } from 'vue'
 import request from '../utils/request'
-import { ElMessage } from 'element-plus'
-import { Setting, Search, Plus, Edit, Delete, Folder } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Edit, Delete, Refresh, Search } from '@element-plus/icons-vue'
 
-// 如果你想在组件间跳转，需要在 App.vue 提供切换方法，这里为了简单使用 inject 或者 location hack
-// 但最好的方式是 App.vue 通过 provide('navigate') 提供方法
-// 假设 App.vue 没有 provide，我们可以通过修改 activeMenu 的 props 来通知父组件（如果结构支持）
-// 这里简单演示：提示用户去点菜单。
+const activeTab = ref('native')
 
-const connected = ref(false)
-const loading = ref(false)
-const namespaces = ref([])
-const currNs = ref('')
-const currGroup = ref('')
-const currDataId = ref('')
-const configList = ref([])
-const page = ref(1)
-const total = ref(0)
-const editDialog = reactive({ visible: false, isNew: false })
-const editForm = reactive({ dataId: '', group: 'DEFAULT_GROUP', type: 'yaml', content: '' })
+// --- 原生模板逻辑 ---
+const tplFormRef = ref(null)
+const templateList = ref([])
+const tplLoading = ref(false)
+const tplDialog = reactive({ visible: false, id: '', saving: false })
+const tplForm = reactive({ name: '', format: 'yaml', content: '' })
+const tplRules = {
+  name: [{ required: true, message: '请输入模板名称', trigger: 'blur' }],
+  format: [{ required: true, message: '请选择格式', trigger: 'change' }],
+  content: [{ required: true, message: '配置内容不能为空', trigger: 'blur' }]
+}
 
-// 检查连接
-const checkConnection = async () => {
+const fetchTemplates = async () => {
+  tplLoading.value = true
+  try {
+    const res = await request.get('/api/templates')
+    templateList.value = Array.isArray(res) ? res : []
+  } catch (error) {
+    console.error('Fetch templates failed:', error)
+  } finally { tplLoading.value = false }
+}
+
+const handleOpenTplDialog = (row = null) => {
+  if (row) {
+    tplDialog.id = row.id
+    Object.assign(tplForm, { name: row.name, format: row.format, content: row.content })
+  } else {
+    tplDialog.id = ''
+    Object.assign(tplForm, { name: '', format: 'yaml', content: '' })
+  }
+  tplDialog.visible = true
+  nextTick(() => tplFormRef.value?.clearValidate())
+}
+
+const submitTemplate = async () => {
+  if (!tplFormRef.value) return
+  await tplFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    tplDialog.saving = true
+    try {
+      const url = tplDialog.id ? '/api/templates/update' : '/api/templates/create'
+      await request.post(url, { ...tplForm, id: tplDialog.id })
+      ElMessage.success('保存成功')
+      tplDialog.visible = false
+      fetchTemplates()
+    } finally { tplDialog.saving = false }
+  })
+}
+
+const handleDeleteTemplate = async (id) => {
+  try {
+    await request.post('/api/templates/delete', { id })
+    ElMessage.success('删除成功')
+    fetchTemplates()
+  } catch(e) {}
+}
+
+// --- Nacos 逻辑 ---
+const nacosConnected = ref(false)
+const nacosState = reactive({ loading: false, list: [], currNs: '', namespaces: [], currDataId: '' })
+const nacosDialog = reactive({ visible: false, isNew: true, saving: false })
+const nacosForm = reactive({ dataId: '', group: 'DEFAULT_GROUP', content: '' })
+
+const checkNacosConnection = async () => {
   try {
     const res = await request.get('/api/nacos/settings')
-    if(res && res.url) {
-      await fetchNamespaces()
-      connected.value = true
-      fetchConfigs()
-    } else {
-      connected.value = false
+    if (res && res.url) {
+      nacosConnected.value = true
+      const nsRes = await request.get('/api/nacos/namespaces')
+      nacosState.namespaces = nsRes.data || []
+      if (!nacosState.currNs && nacosState.namespaces.length > 0) {
+        nacosState.currNs = nacosState.namespaces[0].namespace
+      }
+      fetchNacosConfigs()
     }
-  } catch(e) {
-    connected.value = false
+  } catch (e) { 
+    nacosConnected.value = false 
   }
 }
 
-const fetchNamespaces = async () => {
-  const res = await request.get('/api/nacos/namespaces')
-  if(res && res.data) {
-    namespaces.value = res.data
-    if(!currNs.value && namespaces.value.length > 0) currNs.value = namespaces.value[0].namespace
-  }
-}
-
-const fetchConfigs = async () => {
-  loading.value = true
+const fetchNacosConfigs = async () => {
+  if (!nacosConnected.value) return
+  nacosState.loading = true
   try {
     const res = await request.get('/api/nacos/configs', {
-        params: {
-            tenant: currNs.value,
-            group: currGroup.value,
-            dataId: currDataId.value,
-            pageNo: page.value,
-            pageSize: 10
-        }
+      params: { 
+        tenant: nacosState.currNs, 
+        dataId: nacosState.currDataId, 
+        pageNo: 1, 
+        pageSize: 50 
+      }
     })
-    if (res && res.pageItems) {
-        configList.value = res.pageItems
-        total.value = res.totalCount
-    } else {
-        configList.value = []
-        total.value = 0
-    }
-  } finally { loading.value = false }
+    nacosState.list = res.pageItems || []
+  } finally { nacosState.loading = false }
 }
 
-// ... openEdit, publishConfig, deleteConfig 保持不变 ...
-const openEdit = async (row) => { if (row) { editDialog.isNew = false; editForm.dataId = row.dataId; editForm.group = row.group; editForm.type = row.type; const res = await request.get('/api/nacos/config/detail', { params: { tenant: currNs.value, dataId: row.dataId, group: row.group } }); editForm.content = typeof res === 'object' ? JSON.stringify(res) : res } else { editDialog.isNew = true; editForm.dataId = ''; editForm.group = 'DEFAULT_GROUP'; editForm.content = '' } editDialog.visible = true }
-const publishConfig = async () => { try { await request.post('/api/nacos/config/publish', { tenant: currNs.value, ...editForm }); ElMessage.success('发布成功'); editDialog.visible = false; fetchConfigs() } catch(e) { } }
-const deleteConfig = async (row) => { try { await request.post('/api/nacos/config/delete', { tenant: currNs.value, dataId: row.dataId, group: row.group }); ElMessage.success('已删除'); fetchConfigs() } catch(e) { } }
-
-// 简单的跳转逻辑提示
-const goToSettings = () => {
-  ElMessage.info('请点击左侧菜单栏的 [系统设置]')
+const handleOpenNacosDialog = async (row = null) => {
+  if (row) {
+    nacosDialog.isNew = false
+    nacosForm.dataId = row.dataId
+    nacosForm.group = row.group
+    nacosDialog.saving = true
+    try {
+      const content = await request.get('/api/nacos/config/detail', { 
+        params: { tenant: nacosState.currNs, dataId: row.dataId, group: row.group } 
+      })
+      nacosForm.content = typeof content === 'string' ? content : JSON.stringify(content, null, 2)
+    } finally { nacosDialog.saving = false }
+  } else {
+    nacosDialog.isNew = true
+    Object.assign(nacosForm, { dataId: '', group: 'DEFAULT_GROUP', content: '' })
+  }
+  nacosDialog.visible = true
 }
 
-onMounted(checkConnection)
+const handlePublishNacos = async () => {
+  if (!nacosForm.dataId || !nacosForm.content) {
+    return ElMessage.warning('Data ID 和内容不能为空')
+  }
+  nacosDialog.saving = true
+  try {
+    await request.post('/api/nacos/config/publish', { 
+      tenant: nacosState.currNs, ...nacosForm, type: 'yaml' 
+    })
+    ElMessage.success('发布成功')
+    nacosDialog.visible = false
+    fetchNacosConfigs()
+  } finally { nacosDialog.saving = false }
+}
+
+const handleDeleteNacos = async (row) => {
+  try {
+    await request.post('/api/nacos/config/delete', { 
+      tenant: nacosState.currNs, dataId: row.dataId, group: row.group 
+    })
+    ElMessage.success('已从 Nacos 删除')
+    fetchNacosConfigs()
+  } catch(e) {}
+}
+
+// --- 通用工具 ---
+const formatTime = (ts) => {
+  if (!ts) return '-'
+  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false })
+}
+
+const copyToClipboard = (text) => {
+  navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制到剪贴板'))
+}
+
+onMounted(() => {
+  fetchTemplates()
+  checkNacosConnection()
+})
 </script>
 
 <style scoped>
-.view-container { height: 100%; display: flex; flex-direction: column; background: var(--el-bg-color-page); }
-.empty-wrapper { flex: 1; display: flex; justify-content: center; align-items: center; background: var(--el-bg-color); }
-.content-body { padding: 20px; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-.main-card { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--el-border-color-light); background: var(--el-bg-color); }
-.main-card :deep(.el-card__body) { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 20px; }
-.card-header { display: flex; justify-content: space-between; align-items: center; }
-.header-left { display: flex; align-items: center; gap: 10px; }
-.title { font-size: 16px; font-weight: 600; color: var(--el-text-color-primary); }
-.status-tag .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background-color: #fff; margin-right: 4px; }
-.filter-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-.custom-table { flex: 1; overflow: hidden; }
-.data-id-text { font-family: monospace; font-weight: 500; color: var(--el-text-color-primary); }
-.type-text { font-size: 12px; color: var(--el-text-color-secondary); text-transform: uppercase; }
-.pagination { margin-top: 15px; display: flex; justify-content: flex-end; }
-.form-row { display: flex; gap: 20px; }
-.code-editor :deep(.el-textarea__inner) { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 13px; line-height: 1.6; background-color: #f9f9f9; color: #333; }
-html.dark .code-editor :deep(.el-textarea__inner) { background-color: #1e1e1e; color: #d4d4d4; border-color: #4c4d4f; }
-.guide-text { margin-top: 10px; color: #666; font-size: 14px; }
+.view-container { 
+  height: 100%; 
+  padding: 20px;
+  background-color: var(--el-bg-color-page);
+  box-sizing: border-box;
+}
+
+.main-card { 
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-header { 
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center; 
+}
+
+.title { font-size: 16px; font-weight: 600; }
+
+.config-tabs { height: 100%; }
+:deep(.el-tabs__content) { padding: 0; }
+
+.pane-content { padding-top: 15px; }
+
+.filter-bar { 
+  display: flex; 
+  align-items: center; 
+  gap: 12px; 
+  margin-bottom: 20px; 
+}
+
+.flex-grow { flex-grow: 1; }
+
+.tpl-name { 
+  font-weight: 600; 
+  color: var(--el-color-primary); 
+  cursor: pointer;
+}
+
+/* 模拟编辑器样式 */
+.code-editor-input :deep(.el-textarea__inner) {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  background-color: #282c34;
+  color: #abb2bf;
+  padding: 15px;
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.code-editor-input :deep(.el-textarea__inner):focus {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  align-items: center;
+}
+
+.empty-wrapper {
+  margin-top: 100px;
+}
+
+:deep(.el-table) {
+  border-radius: 8px;
+  overflow: hidden;
+}
 </style>

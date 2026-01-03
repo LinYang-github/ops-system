@@ -280,44 +280,101 @@
     <el-dialog 
       v-model="addModDialog.visible" 
       title="添加服务组件" 
-      width="600px"
+      width="650px"
       destroy-on-close
+      top="5vh"
     >
       <el-form label-width="100px" :model="addModDialog" size="small">
+        
+        <!-- 基础信息 (保留) -->
         <el-row :gutter="20">
           <el-col :span="12">
-            <el-form-item label="组件名称">
+            <el-form-item label="组件名称" required>
               <el-input v-model="addModDialog.moduleName" placeholder="例如: 核心API" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="启动顺序">
                <el-input-number v-model="addModDialog.startOrder" :min="1" :max="99" />
-               <div style="font-size:12px; color:#999">越小越先启动</div>
             </el-form-item>
           </el-col>
         </el-row>
 
-        <el-form-item label="服务包">
+        <el-form-item label="服务包" required>
            <el-select 
              v-model="addModDialog.selectedPkg" 
              @change="updateModVersions" 
              style="width:100%"
-             placeholder="请选择服务包"
+             value-key="name"
+             placeholder="请选择"
            >
              <el-option v-for="p in packages" :key="p.name" :label="p.name" :value="p" />
            </el-select>
         </el-form-item>
-        <el-form-item label="版本">
-           <el-select v-model="addModDialog.version" style="width:100%" placeholder="请选择版本">
+        <el-form-item label="版本" required>
+           <el-select v-model="addModDialog.version" style="width:100%">
              <el-option v-for="v in addModDialog.versions" :key="v" :label="v" :value="v" />
            </el-select>
         </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="addModDialog.desc" placeholder="备注信息" />
-        </el-form-item>
+        
+        <!-- [新增] 配置文件挂载区域 -->
+        <el-divider content-position="left">
+          <el-icon><DocumentCopy /></el-icon> 
+          <span style="margin-left: 8px; font-weight: bold;">配置文件注入</span>
+        </el-divider>
 
-        <el-divider content-position="left">健康检查覆盖 (可选)</el-divider>
+        <div class="config-mounts-container">
+          <!-- 列表过渡动画 -->
+          <transition-group name="list">
+            <div v-for="(item, index) in addModDialog.configMounts" :key="index" class="mount-card">
+              <div class="mount-row">
+                <div class="mount-col-source">
+                  <div class="mount-label">配置模板</div>
+                  <el-select v-model="item.template_id" placeholder="选择模板" style="width: 100%">
+                    <el-option 
+                      v-for="tpl in templateOptions" 
+                      :key="tpl.id" 
+                      :label="tpl.name" 
+                      :value="tpl.id" 
+                    />
+                  </el-select>
+                </div>
+                
+                <div class="mount-arrow">
+                  <el-icon><Right /></el-icon>
+                </div>
+                
+                <div class="mount-col-target">
+                  <div class="mount-label">目标挂载路径</div>
+                  <el-input v-model="item.mount_path" placeholder="e.g. conf/app.yaml" style="width: 100%" />
+                </div>
+                
+                <div class="mount-action">
+                  <el-button type="danger" icon="Delete" circle plain @click="removeMount(index)" />
+                </div>
+              </div>
+            </div>
+          </transition-group>
+
+          <!-- 空状态显示 -->
+          <div v-if="addModDialog.configMounts.length === 0" class="mount-empty">
+            <el-icon><InfoFilled /></el-icon>
+            <span>暂未注入任何配置文件，将使用服务包默认配置</span>
+          </div>
+          
+          <el-button 
+            type="primary" 
+            plain 
+            icon="Plus" 
+            class="add-mount-btn"
+            @click="addMount"
+          >
+            添加配置挂载项目
+          </el-button>
+        </div>
+
+        <!-- 健康检查 (保留) -->
+        <el-divider content-position="left">健康检查覆盖</el-divider>
         <div style="margin-bottom: 10px; color: #999; font-size: 12px; padding-left: 20px;">
           若不填写，将使用服务包中 service.json 的默认配置。
         </div>
@@ -338,6 +395,7 @@
             </el-form-item>
           </el-col>
         </el-row>
+
       </el-form>
       <template #footer>
         <el-button type="primary" @click="addModule">确定</el-button>
@@ -457,7 +515,7 @@ import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   Plus, MoreFilled, More, Link, VideoPlay, VideoPause, Loading, 
-  Document, Download 
+  Document, Download, DocumentCopy, Right, InfoFilled
 } from '@element-plus/icons-vue'
 import { wsStore } from '../store/wsStore' // 引入 WebSocket Store
 import LogViewer from './LogViewer.vue'
@@ -487,9 +545,21 @@ const packages = ref([])
 
 // 弹窗状态
 const addModDialog = reactive({ 
-  visible: false, moduleName: '', selectedPkg: null, version: '', versions: [], desc: '', 
-  startOrder: 1, readinessType: '', readinessTarget: '' 
+  visible: false, 
+  moduleName: '', 
+  selectedPkg: null, 
+  version: '', 
+  versions: [], 
+  desc: '', 
+  startOrder: 1, 
+  readinessType: '', 
+  readinessTarget: '',
+  // [新增]
+  configMounts: [] // Array of { template_id, mount_path }
 })
+
+const templateOptions = ref([]) // 缓存模板列表
+
 const deployDialog = reactive({ 
   visible: false, targetModule: null, nodeID: '', serviceName: '', version: '', loading: false 
 })
@@ -688,11 +758,26 @@ const confirmExport = async () => {
 // --- 组件管理 (Add/Delete Module) ---
 const openAddModuleDialog = async () => { 
   addModDialog.visible = true
-  // 这里仍然需要请求，因为 packages 列表不在 store 里
-  const res = await request.get('/api/packages')
-  packages.value = res || []
+  // 重置表单
+  addModDialog.moduleName = ''
+  addModDialog.configMounts = []
+  
+  // 并行获取服务包和模板
+  const [pkgRes, tplRes] = await Promise.all([
+    request.get('/api/packages'),
+    request.get('/api/templates')
+  ])
+  packages.value = pkgRes || []
+  templateOptions.value = tplRes || []
 }
 
+// 3. 挂载操作逻辑
+const addMount = () => {
+  addModDialog.configMounts.push({ template_id: '', mount_path: '' })
+}
+const removeMount = (index) => {
+  addModDialog.configMounts.splice(index, 1)
+}
 const updateModVersions = () => { 
   if (addModDialog.selectedPkg) {
     addModDialog.versions = addModDialog.selectedPkg.versions || []
@@ -702,6 +787,18 @@ const updateModVersions = () => {
 }
 
 const addModule = async () => {
+  // 简单校验
+  if (!addModDialog.moduleName || !addModDialog.selectedPkg || !addModDialog.version) {
+    return ElMessage.warning('请补全必填信息')
+  }
+  
+  // 校验挂载
+  for (const m of addModDialog.configMounts) {
+    if (!m.template_id || !m.mount_path) {
+      return ElMessage.warning('配置挂载信息不完整')
+    }
+  }
+
   try {
     await request.post('/api/systems/module/add', {
       system_id: currentSystem.value.id,
@@ -712,13 +809,14 @@ const addModule = async () => {
       start_order: addModDialog.startOrder,
       readiness_type: addModDialog.readinessType,
       readiness_target: addModDialog.readinessTarget,
-      readiness_timeout: 30
+      readiness_timeout: 30,
+      // [新增] 传递 config_mounts
+      config_mounts: addModDialog.configMounts
     })
     addModDialog.visible = false
-    // 刷新数据以显示新 Module (Master AddModule 接口应触发广播)
     refreshData() 
     ElMessage.success('组件添加成功')
-  } catch(e) { /* interceptor handles error */ }
+  } catch(e) { /* error handled */ }
 }
 
 const deleteModule = async (moduleId) => { 
@@ -1000,6 +1098,107 @@ onMounted(() => {
 
 .col-setting { padding: 5px 12px; }
 :deep(.col-no-wrap .cell) { white-space: nowrap !important; }
+
+/* [新增] 挂载区域样式 */
+/* 配置文件注入区域容器 */
+.config-mounts-container {
+  background-color: var(--el-fill-color-lighter); /* 自动适配黑夜模式的浅色底 */
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+/* 每一行作为一个卡片 */
+.mount-card {
+  background-color: var(--el-bg-color); /* 黑夜模式下自动变深 */
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--el-box-shadow-light);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mount-card:hover {
+  border-color: var(--el-color-primary-light-5);
+  transform: translateY(-2px);
+  box-shadow: var(--el-box-shadow);
+}
+
+.mount-row {
+  display: flex;
+  align-items: flex-end; /* 标签在输入框上方，所以底部对齐 */
+  gap: 12px;
+}
+
+.mount-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 4px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.mount-col-source { flex: 2; }
+.mount-col-target { flex: 3; }
+
+.mount-arrow {
+  padding-bottom: 8px; /* 对齐输入框中心 */
+  color: var(--el-text-color-placeholder);
+  font-size: 18px;
+}
+
+.mount-action {
+  padding-bottom: 2px;
+}
+
+/* 空状态样式 */
+.mount-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: var(--el-text-color-placeholder);
+  font-size: 12px;
+  border: 1px dashed var(--el-border-color-darker);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  gap: 8px;
+}
+
+/* 新增按钮美化 */
+.add-mount-btn {
+  width: 100%;
+  border-style: dashed !important;
+  background: transparent !important;
+}
+
+.add-mount-btn:hover {
+  background: var(--el-color-primary-light-9) !important;
+}
+
+/* 列表增删动画 */
+.list-enter-active,
+.list-leave-active {
+  transition: all 0.4s ease;
+}
+.list-enter-from,
+.list-leave-to {
+  opacity: 0;
+  transform: translateX(30px);
+}
+
+/* 针对黑夜模式的微调 (如果 Element Plus 的变量不够完美) */
+.dark .config-mounts-container {
+  background-color: rgba(255, 255, 255, 0.02);
+  border-color: #333;
+}
+
+.dark .mount-card {
+  background-color: #1d1e1f; /* 更深的深灰色 */
+}
 
 /* 弹窗样式 */
 .deploy-confirm-info { margin-bottom: 20px; font-size: 14px; color: var(--el-text-color-regular); }

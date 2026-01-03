@@ -115,11 +115,30 @@ func initTables(db *sql.DB) {
 			start_time INTEGER,
 			end_time INTEGER
 		);`,
+
+		// 配置模板表
+		`CREATE TABLE IF NOT EXISTS config_templates (
+			id TEXT PRIMARY KEY,
+			name TEXT,
+			content TEXT,
+			format TEXT,
+			update_time INTEGER
+		);`,
 	}
 
 	for _, sqlStmt := range sqls {
 		if _, err := db.Exec(sqlStmt); err != nil {
 			log.Fatalf("Failed to init table: %v\nSQL: %s", err, sqlStmt)
+		}
+	}
+
+	// [新增] 动态迁移：为 system_modules 添加 config_mounts 字段
+	// 简单粗暴的迁移检查：尝试查询该字段，失败则添加
+	if _, err := db.Query("SELECT config_mounts FROM system_modules LIMIT 1"); err != nil {
+		log.Println("Migrating DB: Adding config_mounts to system_modules...")
+		_, err := db.Exec(`ALTER TABLE system_modules ADD COLUMN config_mounts TEXT DEFAULT '[]'`)
+		if err != nil {
+			log.Printf("Migration failed: %v", err)
 		}
 	}
 }

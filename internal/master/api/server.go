@@ -97,6 +97,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 	configManager = manager.NewConfigManager(database)
 	backupManager = manager.NewBackupManager(database, cfg.Storage.UploadDir)
 	exportManager = manager.NewExportManager(sysManager, pkgManager, instManager, cfg.Storage.UploadDir)
+	tplManager := manager.NewTemplateManager(database)
 
 	// 初始 NodeManager
 	nodeManager = manager.NewNodeManager(database, monitorStore, cfg.Logic.NodeOfflineThreshold)
@@ -158,6 +159,7 @@ func StartMasterServer(cfg *config.MasterConfig, assets fs.FS) error {
 		alertManager,
 		backupManager,
 		exportManager,
+		tplManager,
 		monitorStore,
 		sched,
 		workerGateway,      // [新增] 注入 Gateway
@@ -311,6 +313,13 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, gui
 	mux.HandleFunc("/api/maintenance/upgrade_workers", h.BatchUpgradeWorkers)
 	mux.HandleFunc("/api/maintenance/artifacts", h.ListSystemArtifacts)
 	mux.HandleFunc("/api/maintenance/artifacts/upload", h.UploadSystemArtifact)
+
+	// --- Config Templates 相关 ---
+	mux.HandleFunc("/api/templates", h.ListTemplates)
+	mux.HandleFunc("/api/templates/detail", h.GetTemplate)
+	mux.HandleFunc("/api/templates/create", h.CreateTemplate)
+	mux.HandleFunc("/api/templates/update", h.UpdateTemplate)
+	mux.HandleFunc("/api/templates/delete", h.DeleteTemplate)
 
 	// --- WebSocket (Frontend) ---
 	mux.HandleFunc("/api/ws", ws.HandleWebsocket)

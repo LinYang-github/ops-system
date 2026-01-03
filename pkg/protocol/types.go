@@ -160,6 +160,13 @@ type InstanceStatusReport struct {
 	IoWrite  uint64  `json:"io_write"`
 }
 
+// [新增] 配置文件挂载定义 (存数据库 system_modules.config_mounts)
+type ConfigMount struct {
+	TemplateID string `json:"template_id"` // 引用模板ID
+	MountPath  string `json:"mount_path"`  // 目标路径 (e.g. conf/nginx.conf)
+	// Mode       string `json:"mode"`     // 暂时忽略权限控制，默认 0644
+}
+
 // SystemModule 系统服务定义 (规划阶段)
 // 表示：某个系统 "包含" 某个服务包的特定版本
 type SystemModule struct {
@@ -170,11 +177,14 @@ type SystemModule struct {
 	PackageVersion string `json:"package_version"`
 	Description    string `json:"description"`
 
-	// 【新增】编排与覆盖配置
+	// 编排与覆盖配置
 	StartOrder       int    `json:"start_order"`    // 启动顺序 (1, 2, 3...)
 	ReadinessType    string `json:"readiness_type"` // 覆盖默认值
 	ReadinessTarget  string `json:"readiness_target"`
 	ReadinessTimeout int    `json:"readiness_timeout"`
+
+	// 配置挂载列表 (JSON 存储)
+	ConfigMounts []ConfigMount `json:"config_mounts"`
 }
 
 // SystemView 聚合视图 (用于前端展示)
@@ -194,6 +204,8 @@ type DeployRequest struct {
 	Entrypoint  string            `json:"entrypoint"`
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env"`
+	// [新增] 渲染好的配置文件列表
+	ConfigFiles []ConfigFilePayload `json:"config_files"`
 
 	// 【新增】运行时配置 (Worker 需要把这些存下来，供 StartProcess 使用)
 	ReadinessType    string `json:"readiness_type"`
@@ -367,4 +379,19 @@ type WorkerUpgradeRequest struct {
 	DownloadURL string `json:"download_url"` // 新版二进制下载地址
 	Checksum    string `json:"checksum"`     // MD5 或 SHA256 校验和 (推荐 SHA256)
 	Version     string `json:"version"`      // 目标版本号 (用于日志)
+}
+
+// [新增] 下发给 Worker 的文件载荷
+type ConfigFilePayload struct {
+	Path    string `json:"path"`    // 相对路径
+	Content string `json:"content"` // 渲染后的文本内容
+}
+
+// [新增] 配置模板模型
+type ConfigTemplate struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Content    string `json:"content"` // Go Template 格式
+	Format     string `json:"format"`  // yaml, json, properties...
+	UpdateTime int64  `json:"update_time"`
 }

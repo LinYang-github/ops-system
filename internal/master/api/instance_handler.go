@@ -100,7 +100,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3.2 获取系统模块覆盖配置 (可能为空)
+	// [新增] 3.2 获取系统模块配置 (包含 ConfigMounts)
 	moduleCfg, _ := h.sysMgr.GetModule(req.SystemID, req.ServiceName, req.ServiceVersion)
 
 	// 3.3 融合逻辑
@@ -117,6 +117,40 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		if moduleCfg.ReadinessTimeout > 0 {
 			finalTimeout = moduleCfg.ReadinessTimeout
+		}
+	}
+
+	// ==========================================
+	// [新增] 配置文件渲染逻辑
+	// ==========================================
+	var configFiles []protocol.ConfigFilePayload
+
+	if moduleCfg != nil && len(moduleCfg.ConfigMounts) > 0 {
+		// 准备渲染上下文
+		renderCtx := map[string]interface{}{
+			"Node": map[string]interface{}{
+				"IP":       node.IP,
+				"Hostname": node.Hostname,
+				"ID":       node.ID,
+			},
+			"Service": map[string]interface{}{
+				"Name":    req.ServiceName,
+				"Version": req.ServiceVersion,
+			},
+			// 还可以加入 System, Env 等信息
+		}
+
+		for _, mount := range moduleCfg.ConfigMounts {
+			content, err := h.tplMgr.Render(mount.TemplateID, renderCtx)
+			if err != nil {
+				// 渲染失败记录日志，但可选择是否阻断部署，这里选择阻断
+				response.Error(w, e.New(code.DeployFailed, fmt.Sprintf("渲染配置失败: %s", mount.MountPath), err))
+				return
+			}
+			configFiles = append(configFiles, protocol.ConfigFilePayload{
+				Path:    mount.MountPath,
+				Content: content,
+			})
 		}
 	}
 
@@ -159,6 +193,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 		ReadinessType:    finalType,
 		ReadinessTarget:  finalTarget,
 		ReadinessTimeout: finalTimeout,
+		ConfigFiles:      configFiles,
 	}
 
 	// 使用 WebSocket 下发

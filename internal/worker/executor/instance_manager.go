@@ -197,6 +197,32 @@ func (m *Manager) DeployInstance(req protocol.DeployRequest) error {
 		return fmt.Errorf("unzip failed: %v", err)
 	}
 
+	// ==========================================
+	// [新增] 4. 写入配置文件 (覆盖模式)
+	// ==========================================
+	if len(req.ConfigFiles) > 0 {
+		log.Printf("[Deploy] Injecting %d config files...", len(req.ConfigFiles))
+		for _, cfg := range req.ConfigFiles {
+			// 防止路径穿越
+			fullPath := filepath.Join(workDir, cfg.Path)
+			if !strings.HasPrefix(fullPath, filepath.Clean(workDir)+string(os.PathSeparator)) {
+				log.Printf("[Deploy] Skipping illegal path: %s", cfg.Path)
+				continue
+			}
+
+			// 确保父目录存在
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				return fmt.Errorf("create config dir failed: %v", err)
+			}
+
+			// 写入文件
+			if err := os.WriteFile(fullPath, []byte(cfg.Content), 0644); err != nil {
+				return fmt.Errorf("write config file failed: %v", err)
+			}
+			log.Printf("[Deploy] Config injected: %s", cfg.Path)
+		}
+	}
+
 	// [新增] 4.5 持久化元数据 (用于上报和自愈)
 	meta := InstanceMeta{
 		SystemID:       req.SystemName, // 注意：协议里 SystemName 其实传的是 SystemID
