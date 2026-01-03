@@ -243,6 +243,7 @@ func registerRoutes(mux *http.ServeMux, h *ServerHandler, uploadPath string, gui
 	mux.HandleFunc("/api/systems/delete", h.DeleteSystem)
 	mux.HandleFunc("/api/systems/module/add", h.CreateSystemModule)
 	mux.HandleFunc("/api/systems/module/delete", h.DeleteSystemModule)
+	mux.HandleFunc("/api/systems/module/update", h.UpdateSystemModule)
 	mux.HandleFunc("/api/systems/export", h.ExportSystem)
 
 	// --- Instance 运行相关 ---

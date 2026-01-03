@@ -202,6 +202,13 @@
                 <!-- 组件级别操作 -->
                 <div v-if="scope.row.rowType === 'module'">
                   <el-button 
+                    v-if="!scope.row.is_external"
+                    link type="primary" size="small" 
+                    @click="openEditModuleDialog(scope.row)"
+                  >
+                    编辑
+                  </el-button>
+                  <el-button 
                     v-if="!scope.row.is_external" 
                     link type="primary" size="small" 
                     @click="openDeployDialog(scope.row)"
@@ -279,7 +286,7 @@
     <!-- 弹窗 1: 添加标准组件 -->
     <el-dialog 
       v-model="addModDialog.visible" 
-      title="添加服务组件" 
+      :title="addModDialog.isEdit ? '编辑服务组件' : '添加服务组件'"  
       width="650px"
       destroy-on-close
       top="5vh"
@@ -545,7 +552,9 @@ const packages = ref([])
 
 // 弹窗状态
 const addModDialog = reactive({ 
-  visible: false, 
+  visible: false,
+  isEdit: false, // 新增：模式标记
+  id: '',        // 新增：编辑时需要的 ID
   moduleName: '', 
   selectedPkg: null, 
   version: '', 
@@ -554,8 +563,7 @@ const addModDialog = reactive({
   startOrder: 1, 
   readinessType: '', 
   readinessTarget: '',
-  // [新增]
-  configMounts: [] // Array of { template_id, mount_path }
+  configMounts: [] 
 })
 
 const templateOptions = ref([]) // 缓存模板列表
@@ -757,10 +765,12 @@ const confirmExport = async () => {
 
 // --- 组件管理 (Add/Delete Module) ---
 const openAddModuleDialog = async () => { 
-  addModDialog.visible = true
-  // 重置表单
+  addModDialog.isEdit = false
+  addModDialog.id = ''
   addModDialog.moduleName = ''
+  addModDialog.startOrder = 1
   addModDialog.configMounts = []
+  addModDialog.selectedPkg = null
   
   // 并行获取服务包和模板
   const [pkgRes, tplRes] = await Promise.all([
@@ -769,8 +779,40 @@ const openAddModuleDialog = async () => {
   ])
   packages.value = pkgRes || []
   templateOptions.value = tplRes || []
+  addModDialog.visible = true
 }
 
+const openEditModuleDialog = async (mod) => {
+  // 1. 先获取基础数据源
+  const [pkgRes, tplRes] = await Promise.all([
+    request.get('/api/packages'),
+    request.get('/api/templates')
+  ])
+  packages.value = pkgRes || []
+  templateOptions.value = tplRes || []
+
+  // 2. 填充表单
+  addModDialog.isEdit = true
+  addModDialog.id = mod.id
+  addModDialog.moduleName = mod.module_name
+  addModDialog.startOrder = mod.start_order
+  addModDialog.readinessType = mod.readiness_type
+  addModDialog.readinessTarget = mod.readiness_target
+  addModDialog.desc = mod.description || ''
+  
+  // 深度拷贝挂载配置，防止修改时影响原始数据
+  addModDialog.configMounts = JSON.parse(JSON.stringify(mod.config_mounts || []))
+
+  // 匹配选中的包
+  const pkg = packages.value.find(p => p.name === mod.package_name)
+  if (pkg) {
+    addModDialog.selectedPkg = pkg
+    addModDialog.versions = pkg.versions || []
+    addModDialog.version = mod.package_version
+  }
+
+  addModDialog.visible = true
+}
 // 3. 挂载操作逻辑
 const addMount = () => {
   addModDialog.configMounts.push({ template_id: '', mount_path: '' })
@@ -787,36 +829,31 @@ const updateModVersions = () => {
 }
 
 const addModule = async () => {
-  // 简单校验
   if (!addModDialog.moduleName || !addModDialog.selectedPkg || !addModDialog.version) {
     return ElMessage.warning('请补全必填信息')
   }
-  
-  // 校验挂载
-  for (const m of addModDialog.configMounts) {
-    if (!m.template_id || !m.mount_path) {
-      return ElMessage.warning('配置挂载信息不完整')
-    }
+
+  const payload = {
+    id: addModDialog.id, // 编辑模式下有 ID
+    system_id: currentSystem.value.id,
+    module_name: addModDialog.moduleName,
+    package_name: addModDialog.selectedPkg.name,
+    package_version: addModDialog.version,
+    description: addModDialog.desc,
+    start_order: addModDialog.startOrder,
+    readiness_type: addModDialog.readinessType,
+    readiness_target: addModDialog.readinessTarget,
+    readiness_timeout: 30,
+    config_mounts: addModDialog.configMounts
   }
 
   try {
-    await request.post('/api/systems/module/add', {
-      system_id: currentSystem.value.id,
-      module_name: addModDialog.moduleName,
-      package_name: addModDialog.selectedPkg.name,
-      package_version: addModDialog.version,
-      description: addModDialog.desc,
-      start_order: addModDialog.startOrder,
-      readiness_type: addModDialog.readinessType,
-      readiness_target: addModDialog.readinessTarget,
-      readiness_timeout: 30,
-      // [新增] 传递 config_mounts
-      config_mounts: addModDialog.configMounts
-    })
+    const url = addModDialog.isEdit ? '/api/systems/module/update' : '/api/systems/module/add'
+    await request.post(url, payload)
     addModDialog.visible = false
     refreshData() 
-    ElMessage.success('组件添加成功')
-  } catch(e) { /* error handled */ }
+    ElMessage.success(addModDialog.isEdit ? '组件更新成功' : '组件添加成功')
+  } catch(e) { }
 }
 
 const deleteModule = async (moduleId) => { 

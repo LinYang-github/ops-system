@@ -215,3 +215,33 @@ func (sm *SystemManager) GetAllSystemIDs() ([]string, error) {
 	}
 	return ids, nil
 }
+
+// UpdateModule 更新模块编排参数
+func (sm *SystemManager) UpdateModule(m protocol.SystemModule) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	mountsBytes, _ := json.Marshal(m.ConfigMounts)
+	if len(m.ConfigMounts) == 0 {
+		mountsBytes = []byte("[]")
+	}
+
+	query := `UPDATE system_modules SET 
+		module_name = ?, 
+		package_name = ?, 
+		package_version = ?, 
+		description = ?, 
+		start_order = ?, 
+		readiness_type = ?, 
+		readiness_target = ?, 
+		readiness_timeout = ?, 
+		config_mounts = ? 
+		WHERE id = ?`
+
+	_, err := sm.db.Exec(query,
+		m.ModuleName, m.PackageName, m.PackageVersion, m.Description,
+		m.StartOrder, m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout,
+		string(mountsBytes), m.ID,
+	)
+	return err
+}

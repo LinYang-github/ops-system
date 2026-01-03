@@ -117,3 +117,27 @@ func (h *ServerHandler) DeleteSystemModule(w http.ResponseWriter, r *http.Reques
 
 	response.Success(w, nil)
 }
+
+// UpdateSystemModule 更新服务定义
+// POST /api/systems/module/update
+func (h *ServerHandler) UpdateSystemModule(w http.ResponseWriter, r *http.Request) {
+	var req protocol.SystemModule
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, e.New(code.InvalidJSON, "JSON解析失败", err))
+		return
+	}
+
+	if req.ID == "" {
+		response.Error(w, e.New(code.ParamError, "缺少模块ID", nil))
+		return
+	}
+
+	if err := h.sysMgr.UpdateModule(req); err != nil {
+		response.Error(w, e.New(code.DatabaseError, "更新组件失败", err))
+		return
+	}
+
+	h.logMgr.RecordLog(utils.GetClientIP(r), "update_module", "module", req.ModuleName, "Updated params", "success")
+	h.broadcastUpdate()
+	response.Success(w, nil)
+}
