@@ -184,7 +184,8 @@ type SystemModule struct {
 	ReadinessTimeout int    `json:"readiness_timeout"`
 
 	// 配置挂载列表 (JSON 存储)
-	ConfigMounts []ConfigMount `json:"config_mounts"`
+	ConfigMounts []ConfigMount     `json:"config_mounts"`
+	EnvVars      map[string]string `json:"env_vars"`
 }
 
 // SystemView 聚合视图 (用于前端展示)

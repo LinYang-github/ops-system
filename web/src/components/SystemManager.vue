@@ -324,7 +324,25 @@
            </el-select>
         </el-form-item>
         
-        <!-- [新增] 配置文件挂载区域 -->
+        <!-- 环境变量覆盖 -->
+        <el-divider content-position="left">
+          <el-icon><Operation /></el-icon> 
+          <span style="margin-left: 8px; font-weight: bold;">环境变量覆盖</span>
+        </el-divider>
+
+        <div class="env-vars-container">
+          <div v-for="(item, index) in addModDialog.envList" :key="index" class="env-row">
+            <el-input v-model="item.key" placeholder="Key (如 APP_PORT)" style="width: 200px" />
+            <span class="eq-sign">=</span>
+            <el-input v-model="item.value" placeholder="Value" style="flex: 1" />
+            <el-button type="danger" icon="Delete" circle plain @click="addModDialog.envList.splice(index, 1)" />
+          </div>
+          <el-button type="primary" link icon="Plus" @click="addModDialog.envList.push({key:'', value:''})">
+            添加变量
+          </el-button>
+        </div>
+
+        <!-- 配置文件挂载区域 -->
         <el-divider content-position="left">
           <el-icon><DocumentCopy /></el-icon> 
           <span style="margin-left: 8px; font-weight: bold;">配置文件注入</span>
@@ -563,7 +581,8 @@ const addModDialog = reactive({
   startOrder: 1, 
   readinessType: '', 
   readinessTarget: '',
-  configMounts: [] 
+  configMounts: [] ,
+  envList: [] // 存储结构: [{ key: 'APP_PORT', value: '8081' }]
 })
 
 const templateOptions = ref([]) // 缓存模板列表
@@ -770,6 +789,7 @@ const openAddModuleDialog = async () => {
   addModDialog.moduleName = ''
   addModDialog.startOrder = 1
   addModDialog.configMounts = []
+  addModDialog.envList = [] 
   addModDialog.selectedPkg = null
   
   // 并行获取服务包和模板
@@ -783,35 +803,53 @@ const openAddModuleDialog = async () => {
 }
 
 const openEditModuleDialog = async (mod) => {
-  // 1. 先获取基础数据源
-  const [pkgRes, tplRes] = await Promise.all([
-    request.get('/api/packages'),
-    request.get('/api/templates')
-  ])
-  packages.value = pkgRes || []
-  templateOptions.value = tplRes || []
+  loading.value = true
+  try {
+    // 1. 并行加载依赖数据（服务包和配置模板）
+    const [pkgRes, tplRes] = await Promise.all([
+      request.get('/api/packages'),
+      request.get('/api/templates')
+    ])
+    packages.value = pkgRes || []
+    templateOptions.value = tplRes || []
 
-  // 2. 填充表单
-  addModDialog.isEdit = true
-  addModDialog.id = mod.id
-  addModDialog.moduleName = mod.module_name
-  addModDialog.startOrder = mod.start_order
-  addModDialog.readinessType = mod.readiness_type
-  addModDialog.readinessTarget = mod.readiness_target
-  addModDialog.desc = mod.description || ''
-  
-  // 深度拷贝挂载配置，防止修改时影响原始数据
-  addModDialog.configMounts = JSON.parse(JSON.stringify(mod.config_mounts || []))
+    // 2. 设置弹窗为编辑模式
+    addModDialog.isEdit = true
+    addModDialog.id = mod.id
+    addModDialog.moduleName = mod.module_name
+    addModDialog.startOrder = mod.start_order
+    addModDialog.readinessType = mod.readiness_type
+    addModDialog.readinessTarget = mod.readiness_target
+    addModDialog.desc = mod.description || ''
+    
+    // 3. 处理配置文件挂载 (深度拷贝)
+    addModDialog.configMounts = JSON.parse(JSON.stringify(mod.config_mounts || []))
 
-  // 匹配选中的包
-  const pkg = packages.value.find(p => p.name === mod.package_name)
-  if (pkg) {
-    addModDialog.selectedPkg = pkg
-    addModDialog.versions = pkg.versions || []
-    addModDialog.version = mod.package_version
+    // 4. 处理环境变量 (关键：将 Map {"PORT":"80"} 转换为 Array [{key:"PORT", value:"80"}])
+    if (mod.env_vars && Object.keys(mod.env_vars).length > 0) {
+      addModDialog.envList = Object.entries(mod.env_vars).map(([k, v]) => ({
+        key: k,
+        value: v
+      }))
+    } else {
+      addModDialog.envList = []
+    }
+
+    // 5. 匹配并锁定当前选中的服务包信息
+    const pkg = packages.value.find(p => p.name === mod.package_name)
+    if (pkg) {
+      addModDialog.selectedPkg = pkg
+      addModDialog.versions = pkg.versions || []
+      addModDialog.version = mod.package_version
+    }
+
+    // 6. 显示弹窗
+    addModDialog.visible = true
+  } catch (e) {
+    ElMessage.error('加载组件详情失败: ' + e.message)
+  } finally {
+    loading.value = false
   }
-
-  addModDialog.visible = true
 }
 // 3. 挂载操作逻辑
 const addMount = () => {
@@ -829,13 +867,23 @@ const updateModVersions = () => {
 }
 
 const addModule = async () => {
-  if (!addModDialog.moduleName || !addModDialog.selectedPkg || !addModDialog.version) {
-    return ElMessage.warning('请补全必填信息')
-  }
+  // 1. 基础合法性校验
+  if (!addModDialog.moduleName) return ElMessage.warning('请输入组件名称')
+  if (!addModDialog.selectedPkg) return ElMessage.warning('请选择服务包')
+  if (!addModDialog.version) return ElMessage.warning('请选择版本')
 
+  // 2. 转换环境变量：将 Array 转换回 Map
+  const envMap = {}
+  addModDialog.envList.forEach(item => {
+    if (item.key && item.key.trim() !== '') {
+      envMap[item.key.trim()] = item.value
+    }
+  })
+
+  // 3. 构造提交载荷 (Payload)
   const payload = {
-    id: addModDialog.id, // 编辑模式下有 ID
-    system_id: currentSystem.value.id,
+    id: addModDialog.id, // 如果是新增，此字段为空
+    system_id: props.targetSystemId,
     module_name: addModDialog.moduleName,
     package_name: addModDialog.selectedPkg.name,
     package_version: addModDialog.version,
@@ -843,17 +891,31 @@ const addModule = async () => {
     start_order: addModDialog.startOrder,
     readiness_type: addModDialog.readinessType,
     readiness_target: addModDialog.readinessTarget,
-    readiness_timeout: 30,
-    config_mounts: addModDialog.configMounts
+    readiness_timeout: 30, // 默认 30s
+    config_mounts: addModDialog.configMounts,
+    env_vars: envMap // [核心] 提交 Map 结构
   }
 
   try {
+    loading.value = true
+    // 根据模式选择 API
     const url = addModDialog.isEdit ? '/api/systems/module/update' : '/api/systems/module/add'
+    
     await request.post(url, payload)
-    addModDialog.visible = false
-    refreshData() 
+    
     ElMessage.success(addModDialog.isEdit ? '组件更新成功' : '组件添加成功')
-  } catch(e) { }
+    
+    // 4. 重置并关闭
+    addModDialog.visible = false
+    
+    // 5. 刷新本地数据和全局视图
+    refreshData()
+    emit('refresh-systems') 
+  } catch (e) {
+    ElMessage.error('操作失败: ' + (e.message || '网络异常'))
+  } finally {
+    loading.value = false
+  }
 }
 
 const deleteModule = async (moduleId) => { 
@@ -1236,6 +1298,20 @@ onMounted(() => {
 .dark .mount-card {
   background-color: #1d1e1f; /* 更深的深灰色 */
 }
+
+.env-vars-container {
+  padding: 10px 20px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 4px;
+  margin-bottom: 20px;
+}
+.env-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.eq-sign { font-weight: bold; color: #999; }
 
 /* 弹窗样式 */
 .deploy-confirm-info { margin-bottom: 20px; font-size: 14px; color: var(--el-text-color-regular); }

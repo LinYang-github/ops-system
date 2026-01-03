@@ -137,6 +137,7 @@ func (h *ServerHandler) DeployInstance(w http.ResponseWriter, r *http.Request) {
 				"Name":    req.ServiceName,
 				"Version": req.ServiceVersion,
 			},
+			"Env": moduleCfg.EnvVars,
 			// 还可以加入 System, Env 等信息
 		}
 

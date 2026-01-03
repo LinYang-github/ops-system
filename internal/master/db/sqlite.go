@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -12,11 +14,19 @@ import (
 func InitDB(dbPath string) *sql.DB {
 	log.Printf(">>> DB PATH: %s", dbPath)
 
-	// 使用传入的 dbPath，而不是自己在内部计算
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
+	// 1. 确保 DSN 包含 busy_timeout 和 WAL 模式
+	// 增加 cache=shared 可以提升并发性能
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", dbPath)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Fatalf("Failed to open db: %v", err)
 	}
+
+	// 2. 【关键修正】放开连接限制
+	// 建议设置为一个合理的数值（如 10），或者 0（不限制）
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Hour)
 
 	initTables(db)
 
@@ -24,10 +34,17 @@ func InitDB(dbPath string) *sql.DB {
 }
 
 func initTables(db *sql.DB) {
+	// 所有表结构均采用当前系统的最终版本字段定义
 	sqls := []string{
-		// 系统表
-		`CREATE TABLE IF NOT EXISTS system_infos (id TEXT PRIMARY KEY, name TEXT, description TEXT, create_time INTEGER);`,
-		// 模块表
+		// 业务系统定义
+		`CREATE TABLE IF NOT EXISTS system_infos (
+			id TEXT PRIMARY KEY, 
+			name TEXT, 
+			description TEXT, 
+			create_time INTEGER
+		);`,
+
+		// 业务系统模块 (已包含所有最新编排字段)
 		`CREATE TABLE IF NOT EXISTS system_modules (
 			id TEXT PRIMARY KEY, 
 			system_id TEXT, 
@@ -38,9 +55,12 @@ func initTables(db *sql.DB) {
 			start_order INTEGER,
 			readiness_type TEXT, 
 			readiness_target TEXT,
-			readiness_timeout INTEGER
+			readiness_timeout INTEGER,
+			config_mounts TEXT DEFAULT '[]',
+			env_vars TEXT DEFAULT '{}'
 		);`,
-		// 实例表
+
+		// 实例运行状态
 		`CREATE TABLE IF NOT EXISTS instance_infos (
 			id TEXT PRIMARY KEY, 
 			system_id TEXT, 
@@ -52,10 +72,19 @@ func initTables(db *sql.DB) {
 			uptime INTEGER
 		);`,
 
-		// 日志表
-		`CREATE TABLE IF NOT EXISTS sys_op_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, operator TEXT, action TEXT, target_type TEXT, target_name TEXT, detail TEXT, status TEXT, create_time INTEGER);`,
+		// 操作审计日志
+		`CREATE TABLE IF NOT EXISTS sys_op_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, 
+			operator TEXT, 
+			action TEXT, 
+			target_type TEXT, 
+			target_name TEXT, 
+			detail TEXT, 
+			status TEXT, 
+			create_time INTEGER
+		);`,
 
-		// 节点表
+		// 节点基础信息
 		`CREATE TABLE IF NOT EXISTS node_infos (
 			id TEXT PRIMARY KEY, 
 			ip TEXT,
@@ -71,25 +100,24 @@ func initTables(db *sql.DB) {
 			last_heartbeat INTEGER
 		);`,
 
-		// 服务包元数据表
-		// 联合主键：name + version
+		// 服务包元数据
 		`CREATE TABLE IF NOT EXISTS package_infos (
 			name TEXT,
 			version TEXT,
 			size INTEGER,
 			upload_time INTEGER,
-			manifest TEXT, -- 存储 service.json 的完整内容
+			manifest TEXT, -- 存储 service.json 的完整 JSON 内容
 			PRIMARY KEY (name, version)
 		);`,
 
-		// 通用配置表
+		// 全局系统设置
 		`CREATE TABLE IF NOT EXISTS sys_settings (
 			key TEXT PRIMARY KEY,
 			value TEXT,
 			updated_at INTEGER
 		);`,
 
-		// 告警规则表
+		// 告警规则
 		`CREATE TABLE IF NOT EXISTS sys_alert_rules (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT,
@@ -101,7 +129,7 @@ func initTables(db *sql.DB) {
 			enabled BOOLEAN
 		);`,
 
-		// 告警事件表 (记录历史)
+		// 告警事件历史
 		`CREATE TABLE IF NOT EXISTS sys_alert_events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			rule_id INTEGER,
@@ -116,7 +144,7 @@ func initTables(db *sql.DB) {
 			end_time INTEGER
 		);`,
 
-		// 配置模板表
+		// 配置模板 (用于配置文件注入)
 		`CREATE TABLE IF NOT EXISTS config_templates (
 			id TEXT PRIMARY KEY,
 			name TEXT,
@@ -132,15 +160,7 @@ func initTables(db *sql.DB) {
 		}
 	}
 
-	// [新增] 动态迁移：为 system_modules 添加 config_mounts 字段
-	// 简单粗暴的迁移检查：尝试查询该字段，失败则添加
-	if _, err := db.Query("SELECT config_mounts FROM system_modules LIMIT 1"); err != nil {
-		log.Println("Migrating DB: Adding config_mounts to system_modules...")
-		_, err := db.Exec(`ALTER TABLE system_modules ADD COLUMN config_mounts TEXT DEFAULT '[]'`)
-		if err != nil {
-			log.Printf("Migration failed: %v", err)
-		}
-	}
+	log.Println(">>> Database tables initialized successfully.")
 }
 
 // CloseDB 关闭数据库连接 (用于恢复备份前释放锁)

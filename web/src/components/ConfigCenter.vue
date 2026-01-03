@@ -25,7 +25,7 @@
               <el-table :data="templateList" v-loading="tplLoading" stripe border>
                 <el-table-column prop="name" label="模板名称" min-width="180">
                   <template #default="{ row }">
-                    <span class="tpl-name">{{ row.name }}</span>
+                    <span class="tpl-name" @click="handleOpenTplDialog(row)">{{ row.name }}</span>
                   </template>
                 </el-table-column>
                 <el-table-column prop="format" label="格式" width="100" align="center">
@@ -105,55 +105,97 @@
       </el-card>
     </div>
 
-    <!-- 弹窗：原生模板编辑 -->
+    <!-- 弹窗：原生模板编辑 (已增强) -->
     <el-dialog 
       v-model="tplDialog.visible" 
       :title="tplDialog.id ? '编辑配置模板' : '新建配置模板'" 
-      width="60%"
-      top="8vh"
+      width="900px"
+      top="5vh"
       destroy-on-close
     >
-      <el-form 
-        ref="tplFormRef" 
-        :model="tplForm" 
-        :rules="tplRules" 
-        label-position="top"
-        v-loading="tplDialog.saving"
-      >
-        <el-row :gutter="20">
-          <el-col :span="16">
-            <el-form-item label="模板名称" prop="name">
-              <el-input v-model="tplForm.name" placeholder="例如: nginx-base.conf" />
+      <div class="editor-main-layout">
+        <!-- 左侧：表单与编辑器 -->
+        <div class="editor-left">
+          <el-form 
+            ref="tplFormRef" 
+            :model="tplForm" 
+            :rules="tplRules" 
+            label-position="top"
+          >
+            <el-row :gutter="20">
+              <el-col :span="16">
+                <el-form-item label="模板名称" prop="name">
+                  <el-input v-model="tplForm.name" placeholder="例如: nginx-base.conf" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="8">
+                <el-form-item label="配置格式" prop="format">
+                  <el-select v-model="tplForm.format" style="width: 100%">
+                    <el-option label="YAML" value="yaml" />
+                    <el-option label="JSON" value="json" />
+                    <el-option label="PROPERTIES" value="properties" />
+                    <el-option label="TEXT" value="text" />
+                  </el-select>
+                </el-form-item>
+              </el-col>
+            </el-row>
+            
+            <el-form-item label="配置内容" prop="content">
+              <template #label>
+                <div class="editor-header">
+                  <span>模板内容 (Go Template 语法)</span>
+                  <el-button link type="primary" size="small" @click="copyToClipboard(tplForm.content)">复制内容</el-button>
+                </div>
+              </template>
+              <el-input 
+                ref="tplInputRef"
+                v-model="tplForm.content" 
+                type="textarea" 
+                :rows="20" 
+                class="code-editor-input" 
+                placeholder="# 在此输入配置内容..."
+                @input="() => syntaxError = ''"
+              />
+              <!-- 语法错误提示 -->
+              <el-alert 
+                v-if="syntaxError" 
+                :title="syntaxError" 
+                type="error" 
+                show-icon 
+                :closable="false" 
+                class="syntax-error-tip" 
+              />
             </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="配置格式" prop="format">
-              <el-select v-model="tplForm.format" style="width: 100%">
-                <el-option label="YAML" value="yaml" />
-                <el-option label="JSON" value="json" />
-                <el-option label="PROPERTIES" value="properties" />
-                <el-option label="TEXT" value="text" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        
-        <el-form-item label="配置内容" prop="content">
-          <template #label>
-            <div class="editor-header">
-              <span>配置内容 (Go Template 语法)</span>
-              <el-button link type="primary" size="small" @click="copyToClipboard(tplForm.content)">复制内容</el-button>
+          </el-form>
+        </div>
+
+        <!-- 右侧：变量辅助栏 -->
+        <div class="editor-right">
+          <div class="variable-guide">
+            <div class="guide-title">
+              <el-icon><InfoFilled /></el-icon>
+              <span>可用占位符</span>
             </div>
-          </template>
-          <el-input 
-            v-model="tplForm.content" 
-            type="textarea" 
-            :rows="18" 
-            class="code-editor-input" 
-            placeholder="# 在此输入配置内容..."
-          />
-        </el-form-item>
-      </el-form>
+            <div v-for="group in availableVariables" :key="group.group" class="variable-card">
+              <span class="variable-group-title">{{ group.group }}</span>
+              <el-tooltip
+                v-for="item in group.items"
+                :key="item.label"
+                :content="item.desc"
+                placement="left"
+              >
+                <span class="variable-item" @click="insertVariable(item.value)">
+                  {{ item.label }}
+                </span>
+              </el-tooltip>
+            </div>
+            <div class="guide-footer">
+              提示：点击上方变量名可直接插入到编辑器光标位置。部署时将由系统自动渲染。
+            </div>
+          </div>
+        </div>
+      </div>
+
       <template #footer>
         <el-button @click="tplDialog.visible = false">取消</el-button>
         <el-button type="primary" @click="submitTemplate" :loading="tplDialog.saving">提交保存</el-button>
@@ -195,15 +237,42 @@
 <script setup>
 import { ref, reactive, onMounted, nextTick } from 'vue'
 import request from '../utils/request'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Edit, Delete, Refresh, Search } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { Plus, Edit, Delete, Refresh, Search, InfoFilled } from '@element-plus/icons-vue'
 
 const activeTab = ref('native')
 
+// --- 可用变量清单定义 ---
+const availableVariables = [
+  {
+    group: '节点信息 (Node)',
+    items: [
+      { label: '.Node.IP', value: '{{ .Node.IP }}', desc: '部署节点的通信IP地址' },
+      { label: '.Node.Hostname', value: '{{ .Node.Hostname }}', desc: '节点操作系统主机名' },
+      { label: '.Node.ID', value: '{{ .Node.ID }}', desc: '节点的唯一UUID' },
+    ]
+  },
+  {
+    group: '服务信息 (Service)',
+    items: [
+      { label: '.Service.Name', value: '{{ .Service.Name }}', desc: '正在部署的服务包名称' },
+      { label: '.Service.Version', value: '{{ .Service.Version }}', desc: '服务包的版本号' },
+    ]
+  },
+  {
+    group: '环境变量 (Env)',
+    items: [
+      { label: '.Env.KEY', value: '{{ .Env.KEY }}', desc: '引用在“业务系统->模块设置”中定义的变量。请将 KEY 替换为实际的变量名。' },
+    ]
+  }
+]
+
 // --- 原生模板逻辑 ---
 const tplFormRef = ref(null)
+const tplInputRef = ref(null)
 const templateList = ref([])
 const tplLoading = ref(false)
+const syntaxError = ref('')
 const tplDialog = reactive({ visible: false, id: '', saving: false })
 const tplForm = reactive({ name: '', format: 'yaml', content: '' })
 const tplRules = {
@@ -223,6 +292,7 @@ const fetchTemplates = async () => {
 }
 
 const handleOpenTplDialog = (row = null) => {
+  syntaxError.value = ''
   if (row) {
     tplDialog.id = row.id
     Object.assign(tplForm, { name: row.name, format: row.format, content: row.content })
@@ -234,8 +304,54 @@ const handleOpenTplDialog = (row = null) => {
   nextTick(() => tplFormRef.value?.clearValidate())
 }
 
+// 插入占位符逻辑
+const insertVariable = (val) => {
+  const textarea = tplInputRef.value?.$el.querySelector('textarea')
+  if (!textarea) return
+
+  const start = textarea.selectionStart
+  const end = textarea.selectionEnd
+  const content = tplForm.content
+  
+  tplForm.content = content.substring(0, start) + val + content.substring(end)
+  
+  nextTick(() => {
+    textarea.focus()
+    const newPos = start + val.length
+    textarea.setSelectionRange(newPos, newPos)
+  })
+}
+
+// 前端语法紧前校验
+const validateGoTemplate = (code) => {
+  syntaxError.value = ''
+  
+  // 1. 基础配对校验
+  const openBraces = (code.match(/{{/g) || []).length
+  const closeBraces = (code.match(/}}/g) || []).length
+  
+  if (openBraces !== closeBraces) {
+    syntaxError.value = `语法错误: 大括号不配对 ({{: ${openBraces}, }}: ${closeBraces})`
+    return false
+  }
+
+  // 2. 空指令校验
+  if (/{{[ \t]*}}/.test(code)) {
+    syntaxError.value = '语法错误: 包含空的指令区块 {{ }}'
+    return false
+  }
+
+  return true
+}
+
 const submitTemplate = async () => {
   if (!tplFormRef.value) return
+
+  // 运行语法校验
+  if (!validateGoTemplate(tplForm.content)) {
+    return
+  }
+
   await tplFormRef.value.validate(async (valid) => {
     if (!valid) return
     tplDialog.saving = true
@@ -398,7 +514,64 @@ onMounted(() => {
   cursor: pointer;
 }
 
-/* 模拟编辑器样式 */
+/* 编辑器布局 */
+.editor-main-layout {
+  display: flex;
+  gap: 20px;
+}
+.editor-left { flex: 1; min-width: 0; }
+.editor-right { width: 240px; border-left: 1px solid var(--el-border-color-lighter); padding-left: 20px; }
+
+/* 变量引导样式 */
+.guide-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--el-text-color-primary);
+  margin-bottom: 15px;
+}
+.variable-card {
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 15px;
+}
+.variable-group-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 10px;
+  display: block;
+  text-transform: uppercase;
+}
+.variable-item {
+  display: block;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--el-color-primary);
+}
+.variable-item:hover {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  transform: translateX(4px);
+}
+.guide-footer {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
+  font-style: italic;
+}
+
+/* 编辑器外观 */
 .code-editor-input :deep(.el-textarea__inner) {
   font-family: 'Fira Code', 'Consolas', monospace;
   background-color: #282c34;
@@ -408,8 +581,8 @@ onMounted(() => {
   font-size: 13px;
 }
 
-.code-editor-input :deep(.el-textarea__inner):focus {
-  box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+.syntax-error-tip {
+  margin-top: 10px;
 }
 
 .editor-header {

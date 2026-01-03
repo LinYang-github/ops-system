@@ -47,7 +47,7 @@ func (sm *SystemManager) DeleteSystem(systemID string, im *InstanceManager) erro
 	return tx.Commit()
 }
 
-// AddModule 添加模块
+// AddModule 添加模块定义
 func (sm *SystemManager) AddModule(m protocol.SystemModule) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -58,41 +58,84 @@ func (sm *SystemManager) AddModule(m protocol.SystemModule) error {
 		mountsBytes = []byte("[]")
 	}
 
+	// [新增] 序列化环境变量覆盖配置
+	envBytes, _ := json.Marshal(m.EnvVars)
+	if len(m.EnvVars) == 0 {
+		envBytes = []byte("{}")
+	}
+
 	id := fmt.Sprintf("mod-%d", time.Now().UnixNano())
 	query := `INSERT INTO system_modules 
-	(id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout, config_mounts) 
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	(id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout, config_mounts, env_vars) 
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := sm.db.Exec(query,
 		id, m.SystemID, m.ModuleName, m.PackageName, m.PackageVersion, m.Description,
-		m.StartOrder, m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout, string(mountsBytes), // [新增]
+		m.StartOrder, m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout,
+		string(mountsBytes), string(envBytes), // 存入 JSON 字符串
 	)
 	return err
 }
 
-// 顺便增加一个 GetModule 用于部署时查询配置
+// [新增] UpdateModule 更新模块编排参数
+func (sm *SystemManager) UpdateModule(m protocol.SystemModule) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	mountsBytes, _ := json.Marshal(m.ConfigMounts)
+	if len(m.ConfigMounts) == 0 {
+		mountsBytes = []byte("[]")
+	}
+
+	envBytes, _ := json.Marshal(m.EnvVars)
+	if len(m.EnvVars) == 0 {
+		envBytes = []byte("{}")
+	}
+
+	query := `UPDATE system_modules SET 
+		module_name = ?, 
+		package_name = ?, 
+		package_version = ?, 
+		description = ?, 
+		start_order = ?, 
+		readiness_type = ?, 
+		readiness_target = ?, 
+		readiness_timeout = ?, 
+		config_mounts = ?, 
+		env_vars = ? 
+		WHERE id = ?`
+
+	_, err := sm.db.Exec(query,
+		m.ModuleName, m.PackageName, m.PackageVersion, m.Description,
+		m.StartOrder, m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout,
+		string(mountsBytes), string(envBytes), m.ID,
+	)
+	return err
+}
+
+// GetModule 用于部署时查询配置（包含环境变量注入逻辑）
 func (sm *SystemManager) GetModule(systemID, pkgName, pkgVer string) (*protocol.SystemModule, error) {
 	var m protocol.SystemModule
-	// 这里假设同一个系统下，同一个包名版本组合只有一个模块定义
-	// 实际场景最好用 ModuleID 查，但目前 DeployInstance 传参没带 ModuleID
-	// 暂时用 3 个字段匹配
-	query := `SELECT id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout, config_mounts
+	query := `SELECT id, system_id, module_name, package_name, package_version, description, start_order, readiness_type, readiness_target, readiness_timeout, config_mounts, env_vars
 	          FROM system_modules 
 			  WHERE system_id = ? AND package_name = ? AND package_version = ? LIMIT 1`
 
-	var mountsJSON string
+	var mountsJSON, envJSON string
 	err := sm.db.QueryRow(query, systemID, pkgName, pkgVer).Scan(
 		&m.ID, &m.SystemID, &m.ModuleName, &m.PackageName, &m.PackageVersion, &m.Description,
-		&m.StartOrder, &m.ReadinessType, &m.ReadinessTarget, &m.ReadinessTimeout, &mountsJSON,
+		&m.StartOrder, &m.ReadinessType, &m.ReadinessTarget, &m.ReadinessTimeout, &mountsJSON, &envJSON,
 	)
-	json.Unmarshal([]byte(mountsJSON), &m.ConfigMounts)
 	if err != nil {
 		return nil, err
 	}
+
+	json.Unmarshal([]byte(mountsJSON), &m.ConfigMounts)
+	json.Unmarshal([]byte(envJSON), &m.EnvVars) // 解析环境变量
+
 	return &m, nil
 }
 
-// DeleteModule 删除模块
+// DeleteModule 删除模块定义
 func (sm *SystemManager) DeleteModule(modID string) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -100,7 +143,7 @@ func (sm *SystemManager) DeleteModule(modID string) error {
 	return err
 }
 
-// GetFullView 聚合视图 (需要 InstanceManager 提供实例数据)
+// GetFullView 聚合视图 (供前端展示，包含所有系统、模块及其实例数据)
 func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 	// 1. 获取所有系统
 	sysRows, err := sm.db.Query(`SELECT id, name, description, create_time FROM system_infos ORDER BY create_time DESC`)
@@ -114,17 +157,16 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 	for sysRows.Next() {
 		var s protocol.SystemInfo
 		if err := sysRows.Scan(&s.ID, &s.Name, &s.Description, &s.CreateTime); err != nil {
-			log.Printf("[Warn] GetFullView: Scan system failed: %v", err)
 			continue
 		}
 		systems = append(systems, s)
 	}
 
 	// 2. 获取所有模块
-	// [修改] SQL 语句增加了 config_mounts
+	// [修改] SQL 增加了 env_vars 字段
 	modRows, err := sm.db.Query(`
 		SELECT id, system_id, module_name, package_name, package_version, description, 
-		       start_order, readiness_type, readiness_target, readiness_timeout, config_mounts 
+		       start_order, readiness_type, readiness_target, readiness_timeout, config_mounts, env_vars 
 		FROM system_modules
 	`)
 	if err != nil {
@@ -138,31 +180,32 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 			var m protocol.SystemModule
 			var rType, rTarget sql.NullString
 			var rTimeout sql.NullInt64
-			var mountsJSON sql.NullString // [新增] 用于接收 config_mounts
+			var mountsJSON, envJSON sql.NullString
 
-			// [修改] Scan 参数列表和顺序与 SQL 保持一致
 			err := modRows.Scan(
 				&m.ID, &m.SystemID, &m.ModuleName, &m.PackageName, &m.PackageVersion,
-				&m.Description, &m.StartOrder, &rType, &rTarget, &rTimeout, &mountsJSON,
+				&m.Description, &m.StartOrder, &rType, &rTarget, &rTimeout, &mountsJSON, &envJSON,
 			)
 			if err != nil {
-				log.Printf("[Warn] GetFullView: Scan module failed: %v", err)
 				continue
 			}
 
-			// 处理可空字段
 			m.ReadinessType = rType.String
 			m.ReadinessTarget = rTarget.String
 			m.ReadinessTimeout = int(rTimeout.Int64)
 
-			// [新增] 反序列化 config_mounts
+			// 解析挂载配置
 			if mountsJSON.Valid && mountsJSON.String != "" {
-				if err := json.Unmarshal([]byte(mountsJSON.String), &m.ConfigMounts); err != nil {
-					log.Printf("[Warn] GetFullView: Unmarshal config_mounts failed for module %s: %v", m.ID, err)
-					m.ConfigMounts = []protocol.ConfigMount{} // 解析失败则置为空
-				}
+				json.Unmarshal([]byte(mountsJSON.String), &m.ConfigMounts)
 			} else {
-				m.ConfigMounts = []protocol.ConfigMount{} // NULL 或空字符串也置为空
+				m.ConfigMounts = []protocol.ConfigMount{}
+			}
+
+			// [新增] 解析环境变量覆盖配置
+			if envJSON.Valid && envJSON.String != "" {
+				json.Unmarshal([]byte(envJSON.String), &m.EnvVars)
+			} else {
+				m.EnvVars = make(map[string]string)
 			}
 
 			val := m
@@ -170,7 +213,7 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 		}
 	}
 
-	// 3. 获取所有实例
+	// 3. 获取所有实例状态
 	var instMap map[string][]*protocol.InstanceInfo
 	if im != nil {
 		instMap = im.GetAllInstances()
@@ -197,9 +240,8 @@ func (sm *SystemManager) GetFullView(im *InstanceManager) interface{} {
 	return result
 }
 
-// GetAllSystemIDs 获取所有合法的系统 ID (作为目录白名单)
+// GetAllSystemIDs 获取所有合法的系统 ID
 func (sm *SystemManager) GetAllSystemIDs() ([]string, error) {
-	// 改为查询 id 字段
 	rows, err := sm.db.Query("SELECT id FROM system_infos")
 	if err != nil {
 		return nil, err
@@ -214,34 +256,4 @@ func (sm *SystemManager) GetAllSystemIDs() ([]string, error) {
 		}
 	}
 	return ids, nil
-}
-
-// UpdateModule 更新模块编排参数
-func (sm *SystemManager) UpdateModule(m protocol.SystemModule) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	mountsBytes, _ := json.Marshal(m.ConfigMounts)
-	if len(m.ConfigMounts) == 0 {
-		mountsBytes = []byte("[]")
-	}
-
-	query := `UPDATE system_modules SET 
-		module_name = ?, 
-		package_name = ?, 
-		package_version = ?, 
-		description = ?, 
-		start_order = ?, 
-		readiness_type = ?, 
-		readiness_target = ?, 
-		readiness_timeout = ?, 
-		config_mounts = ? 
-		WHERE id = ?`
-
-	_, err := sm.db.Exec(query,
-		m.ModuleName, m.PackageName, m.PackageVersion, m.Description,
-		m.StartOrder, m.ReadinessType, m.ReadinessTarget, m.ReadinessTimeout,
-		string(mountsBytes), m.ID,
-	)
-	return err
 }
