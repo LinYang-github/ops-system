@@ -15,9 +15,16 @@ import (
 
 // 定义允许管理的系统二进制文件列表 (白名单)
 var allowedArtifacts = map[string]string{
-	"linux_amd64":   "worker_linux_amd64",
+	// Linux
+	"linux_amd64": "worker_linux_amd64",
+	"linux_arm64": "worker_linux_arm64", // [新增]
+
+	// Windows
 	"windows_amd64": "worker_windows_amd64.exe",
-	// "linux_arm64":   "worker_linux_arm64", // 可扩展
+
+	// macOS (Darwin)
+	"darwin_amd64": "worker_darwin_amd64", // [新增] Intel Mac
+	"darwin_arm64": "worker_darwin_arm64", // [新增] Apple Silicon
 }
 
 type ArtifactInfo struct {

@@ -146,3 +146,29 @@ func restartProcess(exePath string) error {
 	os.Exit(0)
 	return nil
 }
+
+// CalculateSelfHash 计算当前运行文件的 SHA256
+func CalculateSelfHash() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	// 处理软链接
+	exePath, err = filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return "", err
+	}
+
+	f, err := os.Open(exePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}

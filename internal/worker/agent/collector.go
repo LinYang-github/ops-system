@@ -72,6 +72,14 @@ func GetNodeInfo() protocol.NodeInfo {
 	info.IP = ip
 	info.MacAddr = mac
 
+	// [新增] 计算自身 Hash
+	if hash, err := utils.CalculateSelfHash(); err == nil {
+		info.AgentHash = hash
+	} else {
+		// 如果计算失败，留空，Master 会忽略或视策略而定
+		fmt.Printf("Failed to calc self hash: %v\n", err)
+	}
+
 	return info
 }
 

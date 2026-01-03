@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,10 +25,11 @@ var upgrader = websocket.Upgrader{
 
 // WorkerConnection 封装单个连接
 type WorkerConnection struct {
-	Conn     *websocket.Conn
-	SendChan chan *protocol.WSMessage
-	NodeID   string
-	ClientIP string
+	Conn       *websocket.Conn
+	SendChan   chan *protocol.WSMessage
+	NodeID     string
+	ClientIP   string
+	MasterHost string // [新增] 保存 Master 的访问地址 (Host头)，用于生成下载链接
 }
 
 // WorkerGateway 管理所有 Worker 连接
@@ -68,9 +70,10 @@ func (g *WorkerGateway) HandleConnection(w http.ResponseWriter, r *http.Request)
 	realIP := utils.GetClientIP(r)
 
 	wc := &WorkerConnection{
-		Conn:     conn,
-		SendChan: make(chan *protocol.WSMessage, 128),
-		ClientIP: realIP, // 绑定 IP
+		Conn:       conn,
+		SendChan:   make(chan *protocol.WSMessage, 128),
+		ClientIP:   realIP, // 绑定 IP
+		MasterHost: r.Host, // [新增] 捕获当前请求的 Host (例如 192.168.1.100:8080)
 	}
 
 	go g.writePump(wc)
@@ -123,9 +126,6 @@ func (g *WorkerGateway) readPump(wc *WorkerConnection) {
 
 				// 确定入库显示的 IP
 				displayIP := wc.ClientIP
-
-				// 【修复】当 Master/Worker 同机时，ClientIP 是 127.0.0.1
-				// 此时优先使用 Worker 上报的 Info.IP (局域网 IP)，以便在前端展示更友好
 				if (displayIP == "127.0.0.1" || displayIP == "::1") && req.Info.IP != "" && req.Info.IP != "127.0.0.1" {
 					displayIP = req.Info.IP
 				}
@@ -133,36 +133,38 @@ func (g *WorkerGateway) readPump(wc *WorkerConnection) {
 				// 处理心跳更新 (更新 DB 和 Cache)
 				g.nodeMgr.HandleHeartbeat(req, displayIP)
 
+				// 广播更新
 				ws.BroadcastNodes(g.nodeMgr.GetAllNodes())
 
-				// 仅在 Register 时或定期下发配置?
-				// 简单起见，每次心跳都检查配置有点重，但考虑到心跳间隔几秒一次，性能可控。
-				// 或者只在 TypeRegister 时下发。
+				// 仅在 Register 时执行的逻辑
 				if msg.Type == protocol.TypeRegister {
+					// 1. 下发全局配置
 					g.sendGlobalConfig(wc)
+
+					// 2. [新增] 检查版本并自动升级 (Hash 对齐)
+					// 异步执行，不阻塞后续心跳处理
+					go g.checkAndAutoUpgrade(wc, req.Info)
 				}
 			}
 		case protocol.TypeStatusReport:
 			var report protocol.InstanceStatusReport
 			if err := json.Unmarshal(msg.Payload, &report); err == nil && g.instMgr != nil {
-				// 1. 更新数据库和内存缓存
 				g.instMgr.UpdateInstanceFullStatus(&report)
-
-				// 2. [关键修复] 触发 WebSocket 广播
-				// 通知前端刷新界面。ws.BroadcastSystems 内部有节流机制，不会造成广播风暴。
 				if g.sysMgr != nil {
 					data := g.sysMgr.GetFullView(g.instMgr)
 					ws.BroadcastSystems(data)
 				}
 			}
 		case protocol.TypeResponse:
-			// 处理 RPC 响应
 			if ch, ok := g.pendingRequests.Load(msg.Id); ok {
 				select {
 				case ch.(chan *protocol.WSMessage) <- &msg:
 				default:
 				}
 			}
+		case protocol.TypeWakeOnLan:
+			// 如果 Worker 具备反向控制能力（如作为跳板唤醒其他节点），逻辑在此扩展
+			// 目前主要是 Master 下发给 Worker，这里不需要处理 Worker 发来的 WoL
 		}
 	}
 }
@@ -395,5 +397,53 @@ func (g *WorkerGateway) SendUpgradeInstruction(nodeID string, payload protocol.W
 		return nil
 	default:
 		return fmt.Errorf("send buffer full")
+	}
+}
+
+// [新增] 检查并自动升级
+func (g *WorkerGateway) checkAndAutoUpgrade(wc *WorkerConnection, info protocol.NodeInfo) {
+	// 1. 构造配置 Key (如 agent_target_hash_linux_amd64)
+	// 需确保 info.OS 和 info.Arch 格式规范，这里做简单处理
+	osType := "linux"
+	if strings.Contains(strings.ToLower(info.OS), "windows") {
+		osType = "windows"
+	}
+	// 假设暂只支持 amd64，实际可根据 info.Arch 动态拼接
+	confKey := fmt.Sprintf("agent_target_hash_%s_amd64", osType)
+
+	// 2. 获取期望 Hash
+	targetHash, err := g.cfgMgr.GetSetting(confKey)
+	if err != nil || targetHash == "" {
+		return // 没有设置期望版本，跳过
+	}
+
+	// 3. 比对 Hash (忽略空值防止误判)
+	if info.AgentHash != "" && info.AgentHash != targetHash {
+		log.Printf("🚀 [AutoUpgrade] Node %s hash mismatch (Curr: %s... vs Target: %s...), triggering upgrade.",
+			info.IP, info.AgentHash[:8], targetHash[:8])
+
+		// 4. 构造下载链接 (这里需要获取 Master Host，可以在 Gateway 初始化时传入或配置中获取)
+		// 简化起见，假设文件名固定
+		fileName := "worker_linux_amd64"
+		if osType == "windows" {
+			fileName = "worker_windows_amd64.exe"
+		}
+
+		// 注意：这里需要获取 Master 的外部访问地址。
+		// 生产环境建议在 config.yaml 配置 external_url，或者通过 request context 传递
+		// 这里暂时硬编码示例，请替换为你的实际逻辑
+		masterAddr := "127.0.0.1:8080" // ⚠️ 需动态获取
+		// 如果 ConfigManager 能拿到 MasterConfig 最好
+
+		downloadURL := fmt.Sprintf("http://%s/download/system/%s", masterAddr, fileName)
+
+		payload := protocol.WorkerUpgradeRequest{
+			DownloadURL: downloadURL,
+			Checksum:    targetHash,
+			Version:     "auto-sync",
+		}
+
+		// 5. 下发指令 (复用之前的 SendUpgradeInstruction)
+		g.SendUpgradeInstruction(info.ID, payload)
 	}
 }

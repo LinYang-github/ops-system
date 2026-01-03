@@ -17,6 +17,8 @@ type NodeInfo struct {
 	CPUCores  int    `json:"cpu_cores"`
 	MemTotal  uint64 `json:"mem_total"`
 	DiskTotal uint64 `json:"disk_total"`
+	// [新增] Agent 可执行文件的指纹 (SHA256)
+	AgentHash string `json:"agent_hash"`
 
 	// 状态字段
 	Status        string `json:"status"`         // "online", "offline", "planned"

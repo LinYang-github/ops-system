@@ -139,7 +139,7 @@
                 >
                   <template #default>
                     在此上传最新编译的 Worker 二进制文件。上传后，点击“执行批量升级”即可向所有在线节点下发更新指令。
-                    <br/>文件将自动保存为规范名称 (Linux: <b>worker_linux_amd64</b>, Windows: <b>worker_windows_amd64.exe</b>)。
+                    <br/>文件名将自动保存为规范名称 (例如: <b>worker_linux_arm64</b>, <b>worker_darwin_arm64</b>)。
                   </template>
                 </el-alert>
 
@@ -148,8 +148,13 @@
                   <el-table-column label="平台架构" width="180">
                     <template #default="scope">
                       <div style="display: flex; align-items: center; gap: 8px;">
+                        <!-- Linux 图标 -->
                         <el-icon v-if="scope.row.key.includes('linux')"><Platform /></el-icon>
-                        <el-icon v-else><Monitor /></el-icon>
+                        <!-- Windows 图标 -->
+                        <el-icon v-else-if="scope.row.key.includes('windows')"><Monitor /></el-icon>
+                        <!-- macOS 图标 [新增] -->
+                        <el-icon v-else-if="scope.row.key.includes('darwin')"><Apple /></el-icon>
+                        
                         <span style="font-weight: bold;">{{ scope.row.key }}</span>
                       </div>
                     </template>
@@ -349,7 +354,7 @@ import request from '../utils/request'
 import { ElMessage, ElNotification, ElMessageBox } from 'element-plus'
 import { 
   Check, Tools, InfoFilled, Brush, Search, Platform, Monitor, 
-  Upload, Download, CopyDocument, Top 
+  Upload, Download, CopyDocument, Top, Apple
 } from '@element-plus/icons-vue'
 
 // =====================

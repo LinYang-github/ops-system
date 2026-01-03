@@ -225,3 +225,19 @@ func (cm *ConfigManager) SaveGlobalConfig(cfg config.GlobalConfig) error {
 
 	return err
 }
+
+// SaveSetting 通用 KV 保存
+func (cm *ConfigManager) SaveSetting(key, value string) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	_, err := cm.db.Exec(`INSERT OR REPLACE INTO sys_settings (key, value, updated_at) VALUES (?, ?, ?)`,
+		key, value, time.Now().Unix())
+	return err
+}
+
+// GetSetting 通用 KV 读取
+func (cm *ConfigManager) GetSetting(key string) (string, error) {
+	var val string
+	err := cm.db.QueryRow(`SELECT value FROM sys_settings WHERE key = ?`, key).Scan(&val)
+	return val, err
+}

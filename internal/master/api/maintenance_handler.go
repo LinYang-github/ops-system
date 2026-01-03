@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -286,30 +287,44 @@ func (h *ServerHandler) BatchUpgradeWorkers(w http.ResponseWriter, r *http.Reque
 	// 文件名约定: worker_linux_amd64, worker_windows_amd64.exe
 	baseDir := filepath.Join(h.uploadDir, "system")
 
+	// 定义支持的架构映射
 	binaries := map[string]struct {
 		Name string
 		Hash string
 	}{
 		"linux_amd64":   {Name: "worker_linux_amd64", Hash: ""},
 		"windows_amd64": {Name: "worker_windows_amd64.exe", Hash: ""},
-		// 可扩展 arm64 等
+		// [新增] ARM64 (服务器/树莓派/M1 Mac)
+		"linux_arm64": {Name: "worker_linux_arm64", Hash: ""},
+
+		// [新增] macOS (开发调试用)
+		"darwin_arm64": {Name: "worker_darwin_arm64", Hash: ""}, // Apple Silicon
+		"darwin_amd64": {Name: "worker_darwin_amd64", Hash: ""}, // Intel Mac
 	}
 
-	// 预加载 Hash
+	// 预加载 Hash 并持久化配置
 	for key, item := range binaries {
 		path := filepath.Join(baseDir, item.Name)
+
+		// calculateFileHash 在 api/utils.go 中定义
 		if hash, err := calculateFileHash(path); err == nil {
-			binaries[key] = struct {
-				Name string
-				Hash string
-			}{item.Name, hash}
+			// 更新 map 中的 Hash 值供后续下发使用
+			binaries[key] = struct{ Name, Hash string }{item.Name, hash}
+
+			// [核心新增] 将计算出的最新 Hash 保存到全局配置表 (sys_settings)
+			// 目的：让 Gateway 在处理新连接时，能读取到此"期望指纹"，实现离线节点上线自动升级
+			// Key 格式: agent_target_hash_linux_amd64
+			settingKey := "agent_target_hash_" + key
+			if err := h.configMgr.SaveSetting(settingKey, hash); err != nil {
+				log.Printf("[Upgrade] Failed to save target hash for %s: %v", key, err)
+			}
 		} else {
 			// 如果文件不存在，Hash 留空，后续跳过对应平台的升级
 			log.Printf("[Upgrade] Binary missing for %s: %v", key, err)
 		}
 	}
 
-	// 2. 遍历所有在线节点
+	// 2. 遍历所有节点 (寻找在线节点立即升级)
 	nodes := h.nodeMgr.GetAllNodes()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -319,53 +334,76 @@ func (h *ServerHandler) BatchUpgradeWorkers(w http.ResponseWriter, r *http.Reque
 	host := r.Host // 用于生成下载链接
 
 	for _, node := range nodes {
+		// 过滤：必须在线 且 WebSocket 连接正常
 		if node.Status != "online" || !h.gateway.IsConnected(node.ID) {
 			continue
 		}
 
-		// 3. 匹配平台
+		// 【修改点】优化匹配逻辑
 		var binKey string
-		// 简单判断 OS/Arch，实际需更严谨
-		if node.OS != "" && (containsIgnoreCase(node.OS, "windows")) {
-			binKey = "windows_amd64" // 暂定只支持 amd64
+
+		// 转小写方便匹配
+		osType := strings.ToLower(node.OS)
+		archType := strings.ToLower(node.Arch)
+
+		if strings.Contains(osType, "windows") {
+			if archType == "amd64" {
+				binKey = "windows_amd64"
+			}
+			// Windows ARM 暂且不提
+		} else if strings.Contains(osType, "darwin") {
+			if archType == "arm64" {
+				binKey = "darwin_arm64"
+			} else {
+				binKey = "darwin_amd64"
+			}
 		} else {
-			binKey = "linux_amd64"
+			// 默认为 Linux
+			if archType == "arm64" || archType == "aarch64" {
+				binKey = "linux_arm64"
+			} else {
+				binKey = "linux_amd64"
+			}
 		}
 
 		binInfo := binaries[binKey]
 		if binInfo.Hash == "" {
-			continue // 该平台升级包未上传，跳过
+			// log.Printf("No binary found for %s %s", node.OS, node.Arch)
+			continue
 		}
 
-		targetCount++
-		wg.Add(1)
-
-		// 4. 并发下发
+		// 4. 并发下发指令
 		go func(n protocol.NodeInfo, bName, bHash string) {
 			defer wg.Done()
 
+			// 构造下载链接
 			downloadURL := fmt.Sprintf("http://%s/download/system/%s", host, bName)
+
 			payload := protocol.WorkerUpgradeRequest{
 				DownloadURL: downloadURL,
 				Checksum:    bHash,
-				Version:     fmt.Sprintf("%d", time.Now().Unix()), // 时间戳版本
+				Version:     fmt.Sprintf("%d", time.Now().Unix()), // 使用时间戳作为临时版本标识
 			}
 
-			// 发送指令 (假设 gateway 已实现 SendUpgradeInstruction)
+			// 发送升级指令 (Gateway 需实现 SendUpgradeInstruction)
 			if err := h.gateway.SendUpgradeInstruction(n.ID, payload); err == nil {
 				mu.Lock()
 				successCount++
 				mu.Unlock()
+			} else {
+				log.Printf("[Upgrade] Failed to send instruction to %s: %v", n.IP, err)
 			}
 		}(node, binInfo.Name, binInfo.Hash)
 	}
 
 	wg.Wait()
 
-	h.logMgr.RecordLog(utils.GetClientIP(r), "batch_upgrade", "cluster", "all_nodes", fmt.Sprintf("Triggered: %d/%d", successCount, targetCount), "success")
+	// 记录操作日志
+	logDetail := fmt.Sprintf("Triggered: %d/%d nodes", successCount, targetCount)
+	h.logMgr.RecordLog(utils.GetClientIP(r), "batch_upgrade", "cluster", "all_nodes", logDetail, "success")
 
 	response.Success(w, map[string]interface{}{
-		"total_online": len(nodes), // 这里的 nodes 包含了离线的，需注意，不过暂且作为参考
+		"total_online": len(nodes), // 参考总数
 		"triggered":    targetCount,
 		"success":      successCount,
 	})
